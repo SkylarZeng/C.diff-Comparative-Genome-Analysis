@@ -1,0 +1,4 @@
+clade,pipeline,n_clusters,n_genomes,min_cluster_size,median_cluster_size,max_cluster_size
+2,pre_core,178,274,1,1,21
+2,post_noncore,176,274,1,1,21
+2,post_softcore,159,274,1,1,21

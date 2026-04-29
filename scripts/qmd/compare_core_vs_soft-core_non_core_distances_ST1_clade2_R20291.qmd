@@ -1,0 +1,380 @@
+---
+title: "Compare Core vs. Soft-core vs. Non-core distances (ST1 clade2_R20291)"
+author: "Skylar Zeng"
+format: html
+---
+
+## Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(readr)
+library(here)
+library(ape)
+library(patchwork)
+```
+
+## Import data
+```{r, echo=FALSE}
+# FASTA alignments
+aln_var <- read.dna(
+  here("variant_calling", "clade2_R20291", "phylo_analysis", "gubbins", "clade2_R20291_gubbins_masked_var_sites.fa"),
+  format = "fasta"
+)
+
+# Optional list of "secondary isolates" to drop later (pairs de-dup)
+secondary_isolates <- read_tsv(
+  here("data", "metadata", "secondary_isolate_ids.txt"),
+  col_names = FALSE
+)$X1
+```
+
+## Helper functions
+```{r, include=FALSE}
+# Force any object to a 2D matrix
+.ensure_matrix <- function(x, nrow = NULL, ncol = NULL) {
+  if (!is.null(dim(x))) return(x)
+  if (!is.null(nrow) && !is.null(ncol)) return(matrix(x, nrow = nrow, ncol = ncol))
+  # default: make it a 1-row matrix
+  matrix(x, nrow = 1)
+}
+
+# DNAbin -> character matrix (samples x sites), works for 1 seq or 1 site too
+to_char_mat <- function(dna) {
+  x <- as.character(dna)             # ape may return list, matrix, or vector
+  if (is.matrix(x)) {
+    return(x)
+  } else if (is.list(x)) {
+    m <- do.call(rbind, x)           # rows = samples, cols = sites
+    return(.ensure_matrix(m))
+  } else if (is.vector(x)) {
+    m <- matrix(x, nrow = 1)         # 1 sample, length(x) sites
+    return(m)
+  } else {
+    stop("Unexpected as.character(DNAbin) output.")
+  }
+}
+
+# Soft-core filter: keep columns with <= threshold missing across samples
+soft_core_filter <- function(dna, threshold = 0.05) {
+  char_mat  <- to_char_mat(dna)                              # samples x sites
+  char_mat  <- .ensure_matrix(char_mat)
+  # Treat N/n/-/?/. as missing
+  miss      <- char_mat %in% c("N","n","-","?","." )
+  miss      <- .ensure_matrix(miss, nrow = nrow(char_mat), ncol = ncol(char_mat))
+
+  # If there are zero columns, bail gracefully
+  if (ncol(miss) == 0) {
+    warning("Alignment has 0 columns; nothing to keep.")
+    return(list(aln = dna[, integer(0), drop = FALSE],
+                keep = logical(0), n_kept = 0, n_all = 0, prop = numeric(0)))
+  }
+
+  prop_miss <- colMeans(miss)                                 # length = ncol
+  keep      <- prop_miss <= threshold
+
+  # If nothing passes, still return a valid empty-alignment result
+  if (!any(keep)) {
+    warning("Soft-core filter kept 0 columns; check threshold or alignment.")
+    return(list(aln = dna[, integer(0), drop = FALSE],
+                keep = keep, n_kept = 0, n_all = ncol(char_mat), prop = prop_miss))
+  }
+
+  list(
+    aln    = dna[, keep, drop = FALSE],
+    keep   = keep,
+    n_kept = sum(keep),
+    n_all  = ncol(char_mat),
+    prop   = prop_miss
+  )
+}
+
+# Distance -> matrix; drop the reference if present
+convert_dist_to_matrix <- function(dist_obj, ref_name = "cdiff_R20291_ref_genome") {
+  mat <- as.matrix(dist_obj)
+  if (!is.null(mat) && length(mat)) {
+    if (ref_name %in% rownames(mat)) {
+      mat <- mat[rownames(mat) != ref_name, colnames(mat) != ref_name, drop = FALSE]
+    }
+  }
+  mat
+}
+
+# Symmetric matrix to canonical long (id1<=id2), unique pairs, drop self
+mat_to_long_pairs <- function(m, drop_ref = TRUE, ref_name = "cdiff_R20291_ref_genome") {
+  # handle empty/NULL matrices gracefully
+  if (is.null(m) || is.null(dim(m)) || any(dim(m) == 0)) {
+    return(tibble(id1 = character(), id2 = character(), snvs = double()))
+  }
+  # optionally drop reference
+  if (drop_ref && !is.null(rownames(m)) && ref_name %in% rownames(m)) {
+    m <- m[rownames(m) != ref_name, colnames(m) != ref_name, drop = FALSE]
+    if (any(dim(m) == 0)) {
+      return(tibble(id1 = character(), id2 = character(), snvs = double()))
+    }
+  }
+  rn <- rownames(m); cn <- colnames(m)
+  if (is.null(rn) || is.null(cn)) stop("Matrix needs row and column names.")
+
+  # build all pairs, attach values
+  g <- expand.grid(id1 = rn, id2 = cn, stringsAsFactors = FALSE)
+  g$snvs <- m[cbind(match(g$id1, rn), match(g$id2, cn))]
+
+  # canonicalize to undirected pairs, drop self, de-dup
+  g %>%
+    filter(id1 != id2) %>%
+    mutate(a = pmin(id1, id2), b = pmax(id1, id2)) %>%
+    transmute(id1 = a, id2 = b, snvs = snvs) %>%
+    distinct(id1, id2, .keep_all = TRUE)
+}
+```
+
+# 5% soft-core
+## Distances: core (strict), non-core (pairwise), soft-core (≤5% missing)
+```{r, echo=FALSE}
+# Core: strict use of all columns in aln_var with pairwise.deletion = FALSE
+var_dist_core     <- dist.dna(aln_var, pairwise.deletion = FALSE, model = "N")
+
+# Non-core (pairwise-inclusive): same alignment, pairwise.deletion = TRUE
+var_dist_noncore  <- dist.dna(aln_var, pairwise.deletion = TRUE,  model = "N")
+
+# Soft-core: filter columns by missingness threshold, then pairwise.deletion = TRUE
+aln_var_soft      <- soft_core_filter(aln_var, threshold = 0.05)
+cat("Soft-core retained: ", aln_var_soft$n_kept, " / ", aln_var_soft$n_all, " columns\n", sep = "")
+var_dist_softcore <- dist.dna(aln_var_soft$aln, pairwise.deletion = TRUE, model = "N")
+```
+
+## Matrices & exports
+```{r, echo=FALSE}
+# Convert to matrices and drop reference if present
+var_core_matrix     <- convert_dist_to_matrix(var_dist_core)
+var_softcore_matrix <- convert_dist_to_matrix(var_dist_softcore)
+var_noncore_matrix  <- convert_dist_to_matrix(var_dist_noncore)
+
+# Save matrices
+dir.create(here("data","SNV_matrices"), showWarnings = FALSE, recursive = TRUE)
+
+write.table(var_core_matrix,
+            file = here("data","SNV_matrices","clade2_r20291_core_dist_matrix.tsv"),
+            sep = "\t", quote = FALSE, col.names = NA)
+write.table(var_softcore_matrix,
+            file = here("data","SNV_matrices","clade2_r20291_softcore_dist_matrix.tsv"),
+            sep = "\t", quote = FALSE, col.names = NA)
+write.table(var_noncore_matrix,
+            file = here("data","SNV_matrices","clade2_r20291_noncore_dist_matrix.tsv"),
+            sep = "\t", quote = FALSE, col.names = NA)
+```
+
+## Long-form (pairs), clean, and save
+```{r, echo=FALSE}
+core_long     <- mat_to_long_pairs(var_core_matrix)
+softcore_long <- mat_to_long_pairs(var_softcore_matrix)
+noncore_long  <- mat_to_long_pairs(var_noncore_matrix)
+
+# Drop secondary isolates if provided
+core_clean <- core_long %>%
+  filter(!(id1 %in% secondary_isolates), !(id2 %in% secondary_isolates))
+softcore_clean <- softcore_long %>%
+  filter(!(id1 %in% secondary_isolates), !(id2 %in% secondary_isolates))
+noncore_clean <- noncore_long %>%
+  filter(!(id1 %in% secondary_isolates), !(id2 %in% secondary_isolates))
+
+write_csv(core_clean,     here("data","SNV_matrices","clade2_r20291_core_dist_long.csv"))
+write_csv(softcore_clean, here("data","SNV_matrices","clade2_r20291_softcore_dist_long.csv"))
+write_csv(noncore_clean,  here("data","SNV_matrices","clade2_r20291_noncore_dist_long.csv"))
+```
+
+## Compare pairwise distances (core vs soft-core vs non-core)
+```{r, echo=FALSE}
+core_for_merge     <- dplyr::rename(core_clean,     snvs_core     = snvs)
+softcore_for_merge <- dplyr::rename(softcore_clean, snvs_softcore = snvs)
+noncore_for_merge  <- dplyr::rename(noncore_clean,  snvs_noncore  = snvs)
+
+snv_comparison <- core_for_merge %>%
+  inner_join(softcore_for_merge, by = c("id1","id2")) %>%
+  inner_join(noncore_for_merge,  by = c("id1","id2")) %>%
+  mutate(
+    delta_soft_vs_core    = snvs_softcore - snvs_core,
+    delta_noncore_vs_soft = snvs_noncore  - snvs_softcore
+  )
+
+# Summaries
+cat("Pairs changed (Core → Soft-core): ",
+    sum(snv_comparison$delta_soft_vs_core != 0), "\n",
+    "Max Δ (Soft - Core): ",
+    ifelse(nrow(snv_comparison)>0, max(snv_comparison$delta_soft_vs_core), NA), "\n",
+    "Mean Δ (Soft - Core): ",
+    ifelse(nrow(snv_comparison)>0, sprintf('%.3f', mean(snv_comparison$delta_soft_vs_core)), NA), "\n\n",
+    "Pairs changed (Soft-core → Non-core): ",
+    sum(snv_comparison$delta_noncore_vs_soft != 0), "\n",
+    "Max Δ (Non-core - Soft): ",
+    ifelse(nrow(snv_comparison)>0, max(snv_comparison$delta_noncore_vs_soft), NA), "\n",
+    "Mean Δ (Non-core - Soft): ",
+    ifelse(nrow(snv_comparison)>0, sprintf('%.3f', mean(snv_comparison$delta_noncore_vs_soft)), NA), "\n",
+    sep = ""
+)
+```
+### Core vs Soft-core — scatter
+```{r, echo=FALSE}
+ggplot(snv_comparison, aes(x = snvs_core, y = snvs_softcore)) +
+  geom_point(size = 2) +
+  coord_cartesian(xlim = c(0, 100)) +
+  labs(
+    x = "Core SNVs",
+    y = "Soft-core SNVs",
+    title = "SNV Distance: Core vs Soft-core (Clade 2)"
+  ) +
+  theme_minimal()
+```
+### Soft-core vs Non-core — scatter
+```{r, echo=FALSE}
+ggplot(snv_comparison, aes(x = snvs_softcore, y = snvs_noncore)) +
+  geom_point(size = 2) +
+  coord_cartesian(xlim = c(0, 100), ylim = c(0, 300)) +
+  labs(
+    x = "Soft-core SNVs",
+    y = "Non-core (pairwise) SNVs",
+    title = "SNV Distance: Soft-core vs Non-core (0–100) (Clade 2)"
+  ) +
+  theme_minimal()
+```
+## Bonus: delta histograms (how much distances change)
+```{r, echo=FALSE}
+# Core → Soft-core
+ggplot(snv_comparison, aes(x = delta_soft_vs_core)) +
+  geom_histogram(binwidth = 1) +
+  labs(x = "Δ (Soft-core - Core)", y = "Pairs", title = "Distance Change: Core → Soft-core") +
+  theme_minimal()
+
+# Soft-core → Non-core
+ggplot(snv_comparison, aes(x = delta_noncore_vs_soft)) +
+  geom_histogram(binwidth = 1) +
+  labs(x = "Δ (Non-core - Soft-core)", y = "Pairs", title = "Distance Change: Soft-core → Non-core") +
+  theme_minimal()
+```
+```{r, echo=FALSE}
+library(dplyr)
+library(tidyr)
+
+# helper: non-overlapping bin counts
+count_bins <- function(x) {
+  tibble(
+    `0-2`   = sum(x >= 0  & x <= 2,  na.rm = TRUE),
+    `2-5`   = sum(x >  2  & x <= 5,  na.rm = TRUE),
+    `5-10`  = sum(x >  5  & x <= 10, na.rm = TRUE),
+    `10-20` = sum(x > 10  & x <= 20, na.rm = TRUE)
+  )
+}
+
+summary_counts <- bind_rows(
+  count_bins(snv_comparison$snvs_core)     %>% mutate(set = "core"),
+  count_bins(snv_comparison$snvs_softcore) %>% mutate(set = "soft-core"),
+  count_bins(snv_comparison$snvs_noncore)  %>% mutate(set = "non-core")
+) %>%
+  select(set, `0-2`, `2-5`, `5-10`, `10-20`) %>%
+  mutate(set = factor(set, levels = c("core","soft-core","non-core"))) %>%
+  arrange(set)
+
+summary_counts
+```
+
+# Soft-core thredhold vs. Proportion of positions
+```{r, echo=FALSE}
+library(tidyverse)
+
+# DNAbin -> character matrix (samples x sites), robust to 1-sample / 1-site
+to_char_mat <- function(dna) {
+  x <- as.character(dna)                     # list / matrix / vector depending on ape
+  if (is.matrix(x)) {
+    m <- x
+  } else if (is.list(x)) {
+    m <- do.call(rbind, x)
+  } else if (is.vector(x)) {
+    m <- matrix(x, nrow = 1)
+  } else {
+    stop("Unexpected DNAbin -> character form")
+  }
+  # Guarantee 2D
+  if (is.null(dim(m))) m <- matrix(m, nrow = 1)
+  m
+}
+
+# --- Build per-site missingness (from aln_var) ---
+var_char <- to_char_mat(aln_var)                  # samples x sites (characters)
+miss_mat <- var_char %in% c("N","n","-","?",".")
+
+# Force dimensions in case R drops them (e.g., 1-column)
+if (is.null(dim(miss_mat))) {
+  miss_mat <- matrix(miss_mat, nrow = nrow(var_char), ncol = ncol(var_char))
+}
+
+total_sites <- if (!is.null(dim(var_char))) ncol(var_char) else length(var_char)
+if (total_sites == 0) {
+  stop("aln_var has 0 columns (no sites). Check your input FASTA.")
+}
+
+prop_miss <- colMeans(miss_mat)                   # length = #sites
+
+# --- Sweep thresholds and compute % included ---
+thresholds <- seq(0, 0.5, by = 0.01)              # 0% to 50% missing allowed
+th_summary <- tibble(
+  threshold = thresholds,
+  n_included = vapply(thresholds, function(t) sum(prop_miss <= t), integer(1))
+) |>
+  mutate(pct_included = 100 * n_included / total_sites)
+
+# --- Compact table at key thresholds ---
+key_th <- c(0, 0.01, 0.02, 0.05, 0.10, 0.20, 0.30)
+th_table <- th_summary |>
+  filter(threshold %in% key_th) |>
+  transmute(
+    `Soft-core threshold (≤ missing)` = paste0(round(threshold*100, 2), "%"),
+    `Positions included` = n_included,
+    `Included (%)` = round(pct_included, 2)
+  )
+
+th_table
+```
+
+```{r, echo=FALSE}
+five_pct <- th_summary |> filter(threshold == 0.05)
+cat("Soft-core 5% → included:", five_pct$n_included, "of", total_sites,
+    sprintf("(%.2f%%)\n", five_pct$pct_included))
+
+## --- Find threshold that includes at least 70% of positions ---
+target <- 0.70
+sorted <- sort(prop_miss, na.last = NA)
+idx    <- max(1, ceiling(target * length(sorted)))
+t70    <- sorted[idx]                           # missingness threshold (fraction) to reach ≥70% included
+inc70  <- sum(prop_miss <= t70)
+pct70  <- 100 * inc70 / total_sites
+
+# One-row summary table
+tibble(
+  `Target included`          = "70%",
+  `Threshold (≤ missing)`    = sprintf("%.2f%%", t70 * 100),
+  `Positions included`       = inc70,
+  `Included (%)`             = round(pct70, 2)
+)
+```
+
+```{r, echo=FALSE}
+ggplot(th_summary, aes(x = threshold*100, y = pct_included)) +
+  geom_line() +
+  geom_point(data = dplyr::filter(th_summary, threshold %in% key_th)) +
+  geom_vline(xintercept = 5, linetype = "dashed") +              # your usual soft-core (5%)
+  geom_vline(xintercept = t70*100, linetype = "dotted") +        # threshold to reach 70% coverage
+  geom_point(aes(x = t70*100, y = pct70), inherit.aes = FALSE) +
+  annotate("text",
+           x = t70*100, y = pct70,
+           label = sprintf("70%% at %.2f%%", t70*100),
+           vjust = -0.6, size = 3) +
+  labs(
+    x = "Soft-core missingness threshold (%)",
+    y = "Positions included (%)",
+    title = "Coverage vs. soft-core threshold (Clade 2)"
+  ) +
+  theme_minimal()
+```
+

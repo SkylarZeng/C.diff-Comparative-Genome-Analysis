@@ -1,0 +1,401 @@
+---
+title: "Sequential Overlap"
+author: "Skylar Zeng"
+date: "2025-07-23"
+output: html_document
+---
+
+## Sequential Overlap Detection
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library("readr")
+library("tidyverse")
+library("readxl")
+library("here")
+library("RColorBrewer")
+library("knitr")
+library("ggthemes")
+library(data.table)
+```
+
+```{r import-data, warning = FALSE, message = FALSE}
+############################
+# import relevant datasets
+############################
+ids <- read_csv(here('data','metadata','cleaned_passed_genomeid.csv'), col_names = FALSE)$X1
+
+patient_data <- read_csv(here("data","metadata", "hospital_onset_data.csv")) %>%
+  filter(genome_id %in% ids)
+
+mlst_data <- read_tsv(here("data", "metadata", "mlst_replaced.tsv")) %>%
+  mutate(ST = str_remove(ST, "\\*"))
+
+main_wiens<- read_tsv(here("data", "metadata", "main_from_wiens_group_filtered_cdiff_cases.tsv")) %>%
+  arrange(PatientID, Date)
+
+# patient locations
+locations <- read_tsv(here('data', 'metadata', 'locations_from_wiens_group_filtered.tsv'))
+
+#patient ids
+pateint_ids <- read_csv(here('data', 'metadata', 'sampleid_patientid.csv'))
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+ids_filtered <- pateint_ids %>%
+  filter(sample_id %in% patient_data$sample_id)
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+locations_filtered <- locations %>% 
+  left_join(patient_data, by = c("PatientID" = "RDW_patient_id")) %>% 
+  filter(EndDate > StartDate, StartDate >= "2016-02-02" & StartDate <= "2017-12-31")
+```
+
+```{r merge-datasets, warning = FALSE, message = FALSE, echo = FALSE}
+##############################
+# to those that are sequenced
+##############################
+patient_and_mlst <- inner_join(patient_data, mlst_data, by = "genome_id")
+```
+
+```{r, warning=FALSE}
+locations_with_st <- locations_filtered %>% 
+  left_join(patient_and_mlst, by = c("PatientID" = "RDW_patient_id")) %>% 
+  filter(!is.na(ST), EndDate > StartDate, StartDate < "2018-01-01") %>%
+  select(-ends_with(".y")) %>%
+  rename_with(~ sub("\\.x$", "", .), ends_with(".x")) %>%
+  distinct()
+# Convert to data.table
+df <- locations_with_st %>%
+  select(PatientID, FacilityCode, Unit, Room, StartDate, EndDate, ST, clade) %>%
+  distinct()
+dt <- as.data.table(df)
+```
+
+### Same Unit
+```{r}
+# Sort by Facility, Unit, StartDate
+setorder(dt, FacilityCode, Unit, StartDate)
+
+# Within each unit, find next stay (ignore Room)
+sequential_unit <- dt[, .SD[order(StartDate)], by = .(FacilityCode, Unit)][
+  , `:=`(next_PatientID = shift(PatientID, type = "lead"),
+         next_StartDate = shift(StartDate, type = "lead"),
+         next_EndDate = shift(EndDate, type = "lead"),
+         next_ST = shift(ST, type = "lead"),
+         next_clade = shift(clade, type = "lead"),
+         next_Room = shift(Room, type = "lead")),
+  by = .(FacilityCode, Unit)
+][
+  !is.na(next_PatientID) & PatientID != next_PatientID & EndDate <= next_StartDate
+][
+  , time_between_days := as.integer(difftime(next_StartDate, EndDate, units = "days"))
+]
+```
+
+### Same Room
+```{r}
+# Sort by Facility, Unit, Room, StartDate
+setorder(dt, FacilityCode, Unit, Room, StartDate)
+
+# Within each room, find next stay
+sequential_room <- dt[, .SD[order(StartDate)], by = .(FacilityCode, Unit, Room)][
+  , `:=`(next_PatientID = shift(PatientID, type = "lead"),
+         next_StartDate = shift(StartDate, type = "lead"),
+         next_EndDate = shift(EndDate, type = "lead"),
+         next_ST = shift(ST, type = "lead"),
+         next_clade = shift(clade, type = "lead")),
+  by = .(FacilityCode, Unit, Room)
+][
+  !is.na(next_PatientID) & PatientID != next_PatientID & EndDate <= next_StartDate
+][
+  , time_between_days := as.integer(difftime(next_StartDate, EndDate, units = "days"))
+]
+```
+
+### Visualization
+```{r, warning=FALSE}
+# Long format for Unit
+unit_long <- rbind(
+  sequential_unit[, .(FacilityCode, Unit, Room, PatientID, StartDate, EndDate, ST)],
+  sequential_unit[, .(FacilityCode, Unit, Room, PatientID = next_PatientID,
+                      StartDate = next_StartDate, EndDate = next_EndDate, ST = next_ST)]
+) %>% distinct()
+
+unit_long[, UnitID := paste(FacilityCode, Unit, sep = "_")]
+
+
+## Long format for Room
+room_long <- rbind(
+  sequential_room[, .(FacilityCode, Unit, Room, PatientID, StartDate, EndDate, ST)],
+  sequential_room[, .(FacilityCode, Unit, Room, PatientID = next_PatientID,
+                      StartDate = next_StartDate, EndDate = next_EndDate, ST = next_ST)]
+) %>% distinct()
+
+room_long[, RoomID := paste(FacilityCode, Unit, Room, sep = "_")]
+```
+### Summary Table
+```{r}
+library(data.table)
+
+# 1. Summary for sequential overlaps in same Unit
+summary_unit <- sequential_unit[
+  , .(
+    n_pairs = .N,
+    min_days = min(time_between_days, na.rm = TRUE),
+    max_days = max(time_between_days, na.rm = TRUE),
+    mean_days = round(mean(time_between_days, na.rm = TRUE), 1),
+    median_days = median(time_between_days, na.rm = TRUE)
+  )
+]
+
+# 2. Summary for sequential overlaps in same Room
+summary_room <- sequential_room[
+  , .(
+    n_pairs = .N,
+    min_days = min(time_between_days, na.rm = TRUE),
+    max_days = max(time_between_days, na.rm = TRUE),
+    mean_days = round(mean(time_between_days, na.rm = TRUE), 1),
+    median_days = median(time_between_days, na.rm = TRUE)
+  )
+]
+
+# 3. Combine into one summary table
+summary_table <- rbind(
+  data.table(type = "Same Unit", summary_unit),
+  data.table(type = "Same Room", summary_room)
+)
+
+# 4. Display
+summary_table
+```
+
+### Sensitivity Test
+```{r}
+cutoffs <- c(7, 14, 30, 60)
+
+unit_sensitivity <- lapply(cutoffs, function(cutoff) {
+  sequential_unit[time_between_days <= cutoff, .N]
+}) %>%
+  unlist()
+
+unit_sensitivity_df <- data.table(
+  Cutoff_Days = cutoffs,
+  N_Pairs = unit_sensitivity,
+  Total_Pairs = nrow(sequential_unit),
+  Percent_Included = round(100 * unit_sensitivity / nrow(sequential_unit), 1)
+)
+
+room_sensitivity <- lapply(cutoffs, function(cutoff) {
+  sequential_room[time_between_days <= cutoff, .N]
+}) %>%
+  unlist()
+
+room_sensitivity_df <- data.table(
+  Cutoff_Days = cutoffs,
+  N_Pairs = room_sensitivity,
+  Total_Pairs = nrow(sequential_room),
+  Percent_Included = round(100 * room_sensitivity / nrow(sequential_room), 1)
+)
+
+unit_sensitivity_df[, Type := "Same Unit"]
+room_sensitivity_df[, Type := "Same Room"]
+
+sensitivity_summary <- rbind(unit_sensitivity_df, room_sensitivity_df)
+sensitivity_summary
+```
+```{r}
+library(ggplot2)
+
+ggplot(sensitivity_summary, aes(x = Cutoff_Days, y = Percent_Included, color = Type)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  labs(title = "Sensitivity Analysis of Sequential Overlap Cutoffs",
+       x = "Cutoff (days between stays)",
+       y = "Percent of Sequential Pairs Included",
+       color = "Type") +
+  scale_x_continuous(breaks = cutoffs) +
+  theme_minimal()
+```
+#### Same ST
+```{r}
+summary_sameST_unit <- sameST_unit[
+  , .(
+    n_pairs = .N,
+    min_days = min(time_between_days, na.rm = TRUE),
+    max_days = max(time_between_days, na.rm = TRUE),
+    mean_days = round(mean(time_between_days, na.rm = TRUE), 1),
+    median_days = median(time_between_days, na.rm = TRUE)
+  )
+]
+
+summary_sameST_room <- sameST_room[
+  , .(
+    n_pairs = .N,
+    min_days = min(time_between_days, na.rm = TRUE),
+    max_days = max(time_between_days, na.rm = TRUE),
+    mean_days = round(mean(time_between_days, na.rm = TRUE), 1),
+    median_days = median(time_between_days, na.rm = TRUE)
+  )
+]
+
+summary_sameST_table <- rbind(
+  data.table(type = "Same Unit (Same ST)", summary_sameST_unit),
+  data.table(type = "Same Room (Same ST)", summary_sameST_room)
+)
+
+summary_sameST_table
+```
+```{r}
+cutoffs <- c(7, 14, 30)
+
+sameST_unit_sensitivity <- lapply(cutoffs, function(cutoff) {
+  sameST_unit[time_between_days <= cutoff, .N]
+}) %>% unlist()
+
+sameST_unit_df <- data.table(
+  Cutoff_Days = cutoffs,
+  N_Pairs = sameST_unit_sensitivity,
+  Total_Pairs = nrow(sameST_unit),
+  Percent_Included = round(100 * sameST_unit_sensitivity / nrow(sameST_unit), 1),
+  Type = "Same Unit (Same ST)"
+)
+
+sameST_room_sensitivity <- lapply(cutoffs, function(cutoff) {
+  sameST_room[time_between_days <= cutoff, .N]
+}) %>% unlist()
+
+sameST_room_df <- data.table(
+  Cutoff_Days = cutoffs,
+  N_Pairs = sameST_room_sensitivity,
+  Total_Pairs = nrow(sameST_room),
+  Percent_Included = round(100 * sameST_room_sensitivity / nrow(sameST_room), 1),
+  Type = "Same Room (Same ST)"
+)
+
+sameST_sensitivity_table <- rbind(sameST_unit_df, sameST_room_df)
+sameST_sensitivity_table
+```
+
+## Visualization (30 days cutoff)
+```{r}
+# Show sequential transitions with ≤30 days between stays
+sequential_transfers_unit <- sequential_unit[time_between_days <= 90]
+
+# Example output
+sequential_transfers_unit[, .(FacilityCode, Unit, Room,
+                         from = PatientID, to = next_PatientID,
+                         from_end = EndDate, to_start = next_StartDate,
+                         time_between_days,
+                         ST, next_ST, clade, next_clade)]
+
+sameST_unit <- sequential_transfers_unit[ST == next_ST]
+sameST_unit[, .(FacilityCode, Unit, Room,
+                         from = PatientID, to = next_PatientID,
+                         from_end = EndDate, to_start = next_StartDate,
+                         time_between_days,
+                         ST, next_ST, clade, next_clade)]
+
+# Show sequential transitions with ≤30 days between stays
+sequential_transfers_room <- sequential_room[time_between_days <= 90]
+
+# Example output
+sequential_transfers_room[, .(FacilityCode, Unit, Room,
+                         from = PatientID, to = next_PatientID,
+                         from_end = EndDate, to_start = next_StartDate,
+                         time_between_days,
+                         ST, next_ST, clade, next_clade)]
+
+sameST_room <- sequential_transfers_room[ST == next_ST]
+sameST_room[, .(FacilityCode, Unit, Room,
+                         from = PatientID, to = next_PatientID,
+                         from_end = EndDate, to_start = next_StartDate,
+                         time_between_days,
+                         ST, next_ST, clade, next_clade)]
+```
+
+### Sequential overlaps by Unit
+```{r, warning=FALSE}
+ggplot(unit_long, aes(x = StartDate, xend = EndDate, 
+                      y = UnitID, yend = UnitID, 
+                      color = as.factor(ST))) +
+  geom_segment(size = 3) +
+  labs(title = "Sequential Stays in Same Unit", 
+       x = "Date", y = "Unit", color = "ST") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 6))
+```
+
+### Sequential overlaps by Room
+```{r, warning=FALSE}
+ggplot(unit_long, aes(x = StartDate, xend = EndDate, 
+                      y = UnitID, yend = UnitID, 
+                      color = as.factor(ST))) +
+  geom_segment(size = 3) +
+  labs(title = "Sequential Stays in Same Unit", 
+       x = "Date", y = "Unit", color = "ST") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 6))
+```
+### Same ST by unit
+```{r, warning=FALSE}
+unit_long_sameST <- rbind(
+  sameST_unit[, .(FacilityCode, Unit, Room, PatientID, StartDate, EndDate, ST)],
+  sameST_unit[, .(FacilityCode, Unit, Room, PatientID = next_PatientID,
+                  StartDate = next_StartDate, EndDate = next_EndDate, ST = next_ST)]
+) %>% distinct()
+
+unit_long_sameST[, UnitID := paste(FacilityCode, Unit, sep = "_")]
+
+ggplot(unit_long_sameST, aes(x = StartDate, xend = EndDate, 
+                             y = UnitID, yend = UnitID, 
+                             color = as.factor(ST))) +
+  geom_segment(size = 3) +
+  labs(title = "Sequential Stays in Same Unit (Same ST)", 
+       x = "Date", y = "Unit", color = "ST") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 6))
+```
+### Same ST by Room
+```{r, warning=FALSE}
+room_long_sameST <- rbind(
+  sameST_room[, .(FacilityCode, Unit, Room, PatientID, StartDate, EndDate, ST)],
+  sameST_room[, .(FacilityCode, Unit, Room, PatientID = next_PatientID,
+                  StartDate = next_StartDate, EndDate = next_EndDate, ST = next_ST)]
+) %>% distinct()
+
+room_long_sameST[, RoomID := paste(FacilityCode, Unit, Room, sep = "_")]
+
+ggplot(room_long_sameST, aes(x = StartDate, xend = EndDate, 
+                             y = RoomID, yend = RoomID, 
+                             color = as.factor(ST))) +
+  geom_segment(size = 3) +
+  labs(title = "Sequential Stays in Same Room (Same ST)", 
+       x = "Date", y = "Room", color = "ST") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 5))
+```
+```{r}
+library(data.table)
+
+# Choose your same-ST data
+# sameST_df <- sameST_unit   # for unit-based
+sameST_df <- sameST_room     # for room-based
+
+# Calculate summary stats for each ST
+summary_by_ST <- sameST_df[
+  , .(
+    n_pairs = .N,
+    min_days = as.numeric(min(time_between_days, na.rm = TRUE)),
+    max_days = as.numeric(max(time_between_days, na.rm = TRUE)),
+    mean_days = round(mean(time_between_days, na.rm = TRUE), 1),
+    median_days = as.numeric(median(time_between_days, na.rm = TRUE))
+  ),
+  by = .(ST)
+][order(n_pairs)]
+
+# Show table
+summary_by_ST
+```
+

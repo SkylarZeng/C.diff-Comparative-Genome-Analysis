@@ -1,0 +1,11 @@
+get,n_pairs,min_days,max_days,mean_days,median_days
+5,1,Inf,-Inf,,
+6,1,Inf,-Inf,,
+10,2,Inf,-Inf,,
+13,1,Inf,-Inf,,
+15,4,Inf,-Inf,,
+17,98,Inf,-Inf,,
+30,4,Inf,-Inf,,
+35,1,Inf,-Inf,,
+3,10,Inf,-Inf,,
+26,12,Inf,-Inf,,

@@ -1,0 +1,1195 @@
+---
+title: "Initial exploration on patient location data"
+author: "Skylar Zeng"
+date: "2025-07-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library("readr")
+library("tidyverse")
+library("readxl")
+library("here")
+library("RColorBrewer")
+library("knitr")
+library("ggthemes")
+```
+
+# Purpose
+The purpose of this notebook is to tabulate and visualize patient and location data of interest for the UM Sys Bio C diff data. They are: 
+
+  1. Descriptive statistics: patient data (age, gender, race, LOS)
+  2. hospital vs. community onset of infection by MLST
+  3. for inpatient infections, days between admission and infection onset by MLST
+  4. Locations variation and temporal overlap
+
+```{r import-data, warning = FALSE, message = FALSE}
+############################
+# import relevant datasets
+############################
+ids <- read_csv(here('data','metadata','cleaned_passed_genomeid.csv'), col_names = FALSE)$X1
+
+patient_data <- read_csv(here("data","metadata", "hospital_onset_data.csv")) %>%
+  filter(genome_id %in% ids)
+
+patient_data_tx <- read_excel(here("data","metadata", "summary_toxin_metadata.xlsx"))
+
+mlst_data <- read_tsv(here("data", "metadata", "mlst_replaced.tsv")) %>%
+  mutate(ST = str_remove(ST, "\\*"))
+
+main_wiens<- read_tsv(here("data", "metadata", "main_from_wiens_group_filtered_cdiff_cases.tsv")) %>%
+  arrange(PatientID, Date)
+
+# patient locations
+locations <- read_tsv(here('data', 'metadata', 'locations_from_wiens_group_filtered.tsv'))
+```
+
+```{r}
+#subset of patients that we want demographics on
+main_wiens_subset <- main_wiens %>% 
+  filter(PatientID %in% patient_data_tx$RDW_patient_id) # combine patient and wiens data
+
+# Convert to Date class to keep only year-month-day (drop time)
+main_wiens_subset$CollectionDateCdiff <- as.Date(main_wiens_subset$CollectionDateCdiff)
+patient_data_tx$collection_date <- as.Date(patient_data_tx$collection_date)
+
+# Perform the full join on PatientID and collection date
+combined_data <- inner_join(
+  main_wiens_subset,
+  patient_data_tx,
+  by = c("PatientID" = "RDW_patient_id", "CollectionDateCdiff" = "collection_date")
+)
+
+# keep only one isolate
+combined_data_single_isolate <- combined_data %>% 
+  filter(isolate == "a") %>%
+  filter(sample_type %in% c("case_formed", "case_unformed"))
+```
+
+```{r merge-datasets, warning = FALSE, message = FALSE, echo = FALSE}
+##############################
+# to those that are sequenced
+##############################
+patient_and_mlst <- inner_join(
+  patient_data_tx,
+  mlst_data,
+  by = c("genomeID" = "genome_id")
+)
+```
+
+# Demographics (n=727)
+## Age distribution (at least 18 yrs-old)
+**Interpretation:** Strong skew toward older adults. This pattern is consistent with the known epidemiology of C. difficile, where older individuals — particularly those over 65 — are at increased risk due to more frequent healthcare exposure, antibiotic use, and comorbidities.
+```{r}
+summary(combined_data_single_isolate$AdmitAge)
+```
+
+```{r plot-age-distribution, warning = FALSE, message = FALSE, echo = FALSE}
+ggplot(combined_data_single_isolate,
+       aes(x = AdmitAge)) + 
+       geom_histogram(stat = "count")
+```
+
+## Gender
+```{r}
+table(combined_data_single_isolate$GenderCode)
+```
+
+## Race
+**Interpretation:** The dataset is overwhelmingly composed of Caucasian patients, who represent 84.0% (604/719) of the total. African American patients make up the second-largest group at 10.8% (78). All other racial groups are represented in small numbers
+```{r}
+table(combined_data_single_isolate$RaceName)
+```
+```{r}
+# Convert and calculate percent
+race_df <- as.data.frame(table(combined_data_single_isolate$RaceName))
+colnames(race_df) <- c("Race", "Count")
+race_df <- race_df %>%
+  mutate(Percent = round(100 * Count / sum(Count), 1),
+         Label = paste0(Count, " (", Percent, "%)"))
+
+# Plot with labels
+ggplot(race_df, aes(x = reorder(Race, -Count), y = Count, fill = Race)) +
+  geom_bar(stat = "identity", show.legend = FALSE) +
+  geom_text(aes(label = Label), vjust = -0.5, size = 3.5) +
+  theme_minimal() +
+  labs(title = "Race Distribution of Patients",
+       x = "Race/Ethnicity",
+       y = "Number of Patients") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+## Length of stay (days)
+**Interpretation:** 
+- The peak in frequency occurs within the first 5 days, indicating that short stays are most common.
+- Median LOS is 8 days, with an interquartile range (IQR) from 5 to 18 days. 
+- Several patients had very prolonged hospitalizations, including stays over 100 days, and a maximum LOS of 350 days.
+```{r}
+summary(combined_data_single_isolate$LOS)
+ggplot(combined_data_single_isolate,
+       aes(x = LOS)) + 
+       geom_histogram(stat = "count")
+```
+
+## Infection Onset Type (0 = Community-Onset, 1 = Hospital-Onset)
+```{r}
+# Check raw counts (optional)
+table(combined_data_single_isolate$hospital_onset)
+
+hospital_onset_summary <- combined_data_single_isolate %>%
+  filter(!is.na(hospital_onset)) %>%
+  mutate(
+    hospital_onset = ifelse(hospital_onset == 1, "Hospital-Onset", "Community-Onset"),
+    hospital_onset = factor(hospital_onset, levels = c("Community-Onset", "Hospital-Onset"))
+  ) %>%
+  count(hospital_onset, name = "n") %>%
+  mutate(
+    p = n / sum(n),
+    perc = scales::percent(p, accuracy = 0.1),
+    label = paste0("n=", n, " (", perc, ")")
+  )
+
+ggplot(hospital_onset_summary, aes(x = hospital_onset, y = n, fill = hospital_onset)) + 
+  geom_col() +
+  geom_text(aes(label = label), vjust = -0.5) +
+  scale_fill_manual(values = c("Community-Onset" = "#F0E442", "Hospital-Onset" = "#D55E00")) +
+  labs(x = "Onset Type", y = "Count", fill = "Onset",
+       title = "Distribution of Hospital vs. Community Onset Cases") +
+  theme_minimal() +
+  expand_limits(y = max(hospital_onset_summary$n) * 1.15)  # avoid label clipping
+```
+
+## Inpatients vs. Outpatient (1 == inpatient)
+```{r plot-inpatients, echo = FALSE, message = FALSE, warning = FALSE}
+
+# Filter out NA and calculate counts and percentages
+inpatient_summary <- combined_data_single_isolate %>%
+  filter(!is.na(inpatient)) %>%
+  mutate(inpatient = recode(as.factor(inpatient), `0` = "Outpatient", `1` = "Inpatient")) %>%
+  count(inpatient) %>%
+  mutate(perc = scales::percent(n / sum(n), accuracy = 0.1),
+         label = paste0("n=", n, " (", perc, ")"))
+
+# Plot
+ggplot(inpatient_summary, aes(x = inpatient, y = n, fill = inpatient)) + 
+  geom_col() +
+  geom_text(aes(label = label), vjust = -0.5) +
+  scale_fill_manual(values = c("Outpatient" = "#E69F00", "Inpatient" = "#56B4E9")) +
+  labs(x = "Patient Status", y = "Count", fill = "Status",
+       title = "Distribution of Isolates by Inpatient Status") +
+  theme_minimal()
+```
+## ST type
+```{r plot-mlst-types, fig.width=15, message = FALSE, warning = FALSE}
+patient_and_mlst <- inner_join(patient_data, mlst_data, by = "genome_id")
+
+patient_and_mlst$sorted_ST <- factor(patient_and_mlst$ST, 
+                              levels = names(sort(table(patient_and_mlst$ST), 
+                              decreasing=FALSE)))
+
+only_one <- names(which(table(patient_and_mlst$ST) == 1))
+
+patient_and_mlst_filtered <- filter(patient_and_mlst,
+                                    !(is.na(sorted_ST)) & !(sorted_ST %in% only_one))
+ggplot(patient_and_mlst,
+       aes(x = sorted_ST)) + 
+       geom_histogram(stat = "count")
+# Prepare color vector
+n_STs <- length(unique(patient_and_mlst_filtered$sorted_ST))
+
+# Choose a palette (e.g., "Paired", "Set3", "Dark2")
+library(RColorBrewer)
+ST_colors <- colorRampPalette(ggthemes_data[["tableau"]][["color-palettes"]][["regular"]]$`Tableau 20`$value)(69)
+
+# Plot with different colors for each ST
+ST_bar_plot <- ggplot(patient_and_mlst_filtered, 
+       aes(x = sorted_ST, fill = sorted_ST)) +
+       geom_bar(stat = "count") +
+       scale_fill_manual(values = ST_colors) +  # Apply BMJ categorical fill palette
+       coord_flip() +
+       theme_light() +
+       theme(axis.text.x = element_text(angle = 90),
+             text = element_text(size = 22)) +
+       ggtitle("Most common sequence types in comprehensive cohort") +
+       ylab("Isolate count") +
+       xlab("Sequence type")
+
+ST_bar_plot 
+```
+
+```{r generate-recurrence-variable}
+patient_and_mlst <- patient_and_mlst %>%
+                      group_by(subject_id) %>%
+                      mutate(secondary_isolate = ifelse(collection_date == min(collection_date), 0, 1) )
+
+table(patient_and_mlst$secondary_isolate)
+
+# Export list of secondary isolates (more than 1 isolate per person, not taking into account timing)
+write(patient_and_mlst$genome_id[patient_and_mlst$secondary_isolate == 1], here("data", "metadata", "secondary_isolate_ids.txt"))
+
+# Import secondary isolates
+secondary_isolates <- read_tsv(here("data", "metadata", "secondary_isolate_ids.txt"), col_names = FALSE)$X1
+```
+
+Repeat above plot with secondary isolates highlighted
+
+```{r plot-mlst-types-sorted, fig.width=15, message = FALSE, warning = FALSE}
+patient_and_mlst$sorted_ST <- factor(patient_and_mlst$ST, 
+                              levels = names(sort(table(patient_and_mlst$ST), 
+                              decreasing=FALSE)))
+
+only_one <- names(which(table(patient_and_mlst$ST) == 1))
+
+patient_and_mlst$secondary <- factor(ifelse((patient_and_mlst$genome_id %in% secondary_isolates), "secondary isolate","first isolate"), levels = c(c("secondary isolate", "first isolate")))
+
+
+patient_and_mlst_filtered <- filter(patient_and_mlst,
+                                    ! (is.na(sorted_ST)) & !(sorted_ST %in% only_one))
+
+ST_bar_plot_repeats <- ggplot(patient_and_mlst_filtered, 
+       aes(x = sorted_ST, fill = secondary)) + 
+       geom_bar(stat = "count") +
+       theme(axis.text.x = element_text(angle = 90)) + 
+       ggtitle("Most common sequence types in comprehensive cohort (N = 1538)") +
+       coord_flip() + 
+       theme_light() + 
+       ylab("Isolate count") +
+       xlab("Sequence type") +
+       theme(text = element_text(size = 22),
+             legend.title = element_blank(),
+             legend.position = c(0.5,0.5)) + 
+       scale_fill_manual(values = c("#DF7a26","#316593"))
+
+ST_bar_plot_repeats
+```
+
+## ST on HO vs. CO
+
+```{r}
+# Merge ST in with patient data
+patient_data_unique_ST_patient <- left_join(patient_data, mlst_data, by = c("genome_id")) %>%
+  distinct(RDW_patient_id, ST, .keep_all= TRUE)
+
+patient_data_unique_ST_patient <- patient_data_unique_ST_patient %>%
+  filter(!is.na(ST),
+         RDW_patient_id %in% main_wiens$PatientID) %>%
+  group_by(ST) %>%
+  mutate(binned_ST = ifelse(n() > 1, ST, "Singletons"))
+
+patient_data_unique_ST_patient$sorted_ST <- factor(patient_data_unique_ST_patient$binned_ST, 
+                                                   levels = names(sort(table(patient_data_unique_ST_patient$binned_ST), 
+                                                                       decreasing=FALSE))) # make sorted ST for plotting
+
+patient_data_unique_ST_patient$sorted_ST <- fct_relevel(patient_data_unique_ST_patient$sorted_ST, "Singletons", after = 0)
+
+# make color pallette
+colors_all <- colorRampPalette(ggthemes_data[["tableau"]][["color-palettes"]][["regular"]]$`Tableau 20`$value)(78)
+
+# plot 
+figure1b <- ggplot(patient_data_unique_ST_patient) +
+  geom_bar(
+    aes(x = sorted_ST, fill = factor(hospital_onset, levels = c(0, 1))),
+    stat = "count",
+    alpha = 0.9
+  ) +
+  labs(x = "ST") + 
+  coord_flip() + 
+  theme_light() + 
+  ylab("Isolate count") +
+  xlab("Sequence type") + 
+  scale_y_continuous(breaks = seq(0, 110, 10)) + 
+  theme(
+    plot.margin = unit(c(1.5, 1.5, 1.5, 1.5), "cm"),
+    axis.title.x = element_text(size = 20, face = "bold"),
+    axis.title.y = element_text(size = 20, face = "bold"),
+    axis.text.x = element_text(size = 14)
+  ) +
+  scale_fill_manual(
+    name = "Infection onset type",
+    values = c("#77AADD", "#114477"),
+    labels = c("Community-onset (CO)", "Healthcare-onset (HO)")
+  )
+
+plot(figure1b)
+```
+
+For the rest of the plots/tables, I will only keep specific bins for ST types for which we have more than 50 isolates. The rest will get grouped in an "other" bin, along with the novel and non-determined sequence types according to Ariba. 
+
+```{r group-sequence-types, echo = FALSE}
+##########################################
+# Create a grouped sequence type variable 
+# Keep ST types with >50 isolates, 
+# group others (incl. "NA") as "other"
+##########################################
+
+# Count isolates per ST and filter those with >50
+# Count isolates per ST, excluding NAs
+st_counts <- table(na.omit(patient_and_mlst$ST))
+over_50_isolates <- names(st_counts[st_counts > 50])
+
+# Create grouped ST variable
+patient_and_mlst <- patient_and_mlst %>%
+  mutate(grouped_st = ifelse(ST %in% over_50_isolates, ST, "other"))
+```
+
+Next I took the most common sequence types and broke down those counts by inpatient vs. not (again inpatient == 1)
+
+```{r plot-st-by-inpatient, message = FALSE, warning = FALSE, fig.height = 6}
+ST_bar_plot_inpatients_all_st <- ggplot(filter(patient_and_mlst_filtered, !is.na(inpatient)), 
+       aes(x = sorted_ST, fill = factor(inpatient, levels = c(0,1)))) + 
+       geom_bar(stat = "count") +
+       theme(axis.text.x = element_text(angle = 90)) + 
+       ggtitle("STs collected by inpatient/outpatient") +
+       coord_flip() + 
+       theme_light() + 
+       ylab("Isolate count") +
+       xlab("Sequence type") +
+       theme(text = element_text(size = 22),
+             legend.title = element_blank(),
+             legend.position = c(0.5,0.5),
+             legend.key.size = unit(20, "pt")) + 
+       scale_fill_manual(values = c("#316593","#df7a26"), labels = c("outpatient", "inpatient"))
+
+ST_bar_plot_inpatients_all_st
+
+patient_and_mlst$grouped_st <- factor(patient_and_mlst$grouped_st, 
+                              levels = names(sort(table(patient_and_mlst$grouped_st), 
+                              decreasing=TRUE)))
+
+ST_bar_plot_inpatients <- ggplot(filter(patient_and_mlst, !is.na(inpatient)), 
+       aes(x = grouped_st, fill = factor(inpatient, levels = c(0,1)))) + 
+       geom_bar(stat = "count") +
+       theme(axis.text.x = element_text(angle = 90)) + 
+       ggtitle("STs collected by inpatient/outpatient") +
+       coord_flip() + 
+       theme_light() + 
+       ylab("Isolate count") +
+       xlab("Sequence type") +
+       theme(text = element_text(size = 22),
+             legend.title = element_blank(),
+             legend.position = c(0.5,0.5),
+             legend.key.size = unit(20, "pt")) + 
+       scale_fill_manual(values = c("#6aa2c6","#df7a26"), labels = c("outpatient", "inpatient"))
+
+ST_bar_plot_inpatients
+```
+
+And then hospital-onset vs. not
+
+```{r plot-st-by-hospital-onset, message = FALSE, warning = FALSE, fig.height = 6}
+############################################################
+# 1. ALL STs (sorted_ST) – community- vs healthcare-onset
+############################################################
+
+# ensure the factor levels are ordered 0 = community, 1 = healthcare
+patient_and_mlst_filtered <- patient_and_mlst_filtered %>% 
+  mutate(hospital_onset = factor(hospital_onset, levels = c(0, 1)))
+
+ST_bar_plot_onset_all_st <- ggplot(
+  filter(patient_and_mlst_filtered, !is.na(hospital_onset)),
+  aes(x = sorted_ST, fill = hospital_onset)
+) +
+  geom_bar(stat = "count") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ggtitle("STs collected by community- vs healthcare-onset") +
+  coord_flip() +
+  theme_light() +
+  ylab("Isolate count") +
+  xlab("Sequence type") +
+  theme(
+    text = element_text(size = 22),
+    legend.title = element_blank(),
+    legend.position = c(0.5, 0.5),
+    legend.key.size = unit(20, "pt")
+  ) +
+  scale_fill_manual(
+    values = c("#316593", "#FF842A"),
+    labels = c("community-onset", "healthcare-onset")
+  )
+
+ST_bar_plot_onset_all_st
+
+############################################################
+# 2. COMMON STs (>50 isolates) – community- vs healthcare-onset
+############################################################
+
+# keep the grouped_st factor ordered by overall frequency
+patient_and_mlst$grouped_st <- factor(
+  patient_and_mlst$grouped_st,
+  levels = names(sort(table(patient_and_mlst$grouped_st), decreasing = TRUE))
+)
+
+ST_bar_plot_onset_grouped <- ggplot(
+  filter(patient_and_mlst, !is.na(hospital_onset)),
+  aes(x = grouped_st,
+      fill = factor(hospital_onset, levels = c(0, 1)))
+) +
+  geom_bar(stat = "count") +
+  theme(axis.text.x = element_text(angle = 90)) +
+  ggtitle("Common STs collected by community- vs healthcare-onset") +
+  coord_flip() +
+  theme_light() +
+  ylab("Isolate count") +
+  xlab("Sequence type") +
+  theme(
+    text = element_text(size = 22),
+    legend.title = element_blank(),
+    legend.position = c(0.5, 0.5),
+    legend.key.size = unit(20, "pt")
+  ) +
+  scale_fill_manual(
+    values = c("#538797", "#FF842A"),
+    labels = c("community-onset", "healthcare-onset")
+  )
+
+ST_bar_plot_onset_grouped
+```
+
+Next I looked at days until infection onset by sequence type for those isolates that were collected from inpatients (note does not restrict to hospital-onset only)
+
+```{r days-between-admit-onset-1, echo = FALSE}
+ggplot(filter(patient_and_mlst, inpatient == 1),
+       aes(x = grouped_st, y = days_btwn_admit_and_onset)) + 
+       geom_point() + 
+       geom_boxplot()
+```
+
+The raw data has outliers that make it hard to visualize. Removing those: 
+
+```{r days-between-admit-onset-2, echo = FALSE}
+ggplot(filter(patient_and_mlst, inpatient == 1 & days_btwn_admit_and_onset < 300),
+       aes(x = grouped_st, y = days_btwn_admit_and_onset)) + 
+       geom_point() + 
+       geom_boxplot()
+```
+
+Still pretty scrunched at the bottom. Let's look at a table instead: 
+
+```{r days-between-admit-onset-table, warning = FALSE, message = FALSE, echo = FALSE}
+kable(patient_and_mlst %>%
+  filter(inpatient == 1) %>%
+  group_by(grouped_st) %>%
+  summarize(median = quantile(days_btwn_admit_and_onset, .5),
+            mean = mean(days_btwn_admit_and_onset),
+            sd = sd(days_btwn_admit_and_onset)))
+```
+
+
+## plot timing and recurrence
+```{r plot-timing-recurrence, message = FALSE, warning = FALSE, fig.height = 6}
+timing <- ggplot(filter(patient_and_mlst, grouped_st != "other"), aes(x = collection_date, y = grouped_st)) +
+  geom_point(size = 2, alpha = 0.8) +
+  xlab("Collection date") +
+  ylab("Sequence type") +
+  theme_light() + 
+  ggtitle("Collection timing of newly sequenced C. difficile isolates") + 
+  theme(text = element_text(size = 22))
+
+timing
+```
+
+## Summary Table
+```{r}
+library(table1)
+library(dplyr)
+library(labelled)
+
+# Format categorical variable for clarity
+combined_data_single_isolate$GenderCode <- factor(combined_data_single_isolate$GenderCode,
+                                                  levels = c("F", "M"),
+                                                  labels = c("Female", "Male"))
+
+combined_data_single_isolate$inpatient <- factor(combined_data_single_isolate$inpatient,
+                                                 levels = c(0, 1),
+                                                 labels = c("Outpatient", "Inpatient"))
+
+combined_data_single_isolate$hospital_onset <- factor(combined_data_single_isolate$hospital_onset,
+                                                      levels = c(0, 1),
+                                                      labels = c("Community", "Hospital"))
+
+# Assign labels
+label(combined_data_single_isolate$AdmitAge) <- "Age"
+label(combined_data_single_isolate$BMI) <- "BMI"
+label(combined_data_single_isolate$AdmissionType) <- "Admission Type"
+label(combined_data_single_isolate$GenderCode) <- "Sex"
+label(combined_data_single_isolate$RaceName) <- "Race"
+label(combined_data_single_isolate$LOS) <- "Length of Stay (days)"
+label(combined_data_single_isolate$inpatient) <- "Patient Status"
+label(combined_data_single_isolate$hospital_onset) <- "Onset Type"
+
+# Generate Table 1 (no grouping)
+table1(~ AdmitAge + BMI + AdmissionType + 
+         GenderCode + RaceName + LOS + inpatient + hospital_onset,
+       data = combined_data_single_isolate)
+```
+
+# with cluster data
+```{r}
+library(readr)
+library(dplyr)
+library(here)
+
+# --- Clade 2 ---
+clade2_clusters_df <- read_csv(here("data", "metadata", "clade2_clusters_df.csv"), show_col_types = FALSE)
+names(clade2_clusters_df)[1] <- "genomeID"
+
+clade2_clusters_df <- clade2_clusters_df %>%
+  mutate(clade = "II",
+         clade_cluster = paste0(clade, "-", cluster))
+
+# --- Clade 1 ---
+clade1_clusters_df <- read_csv(here("data", "metadata", "clade1_clusters_df.csv"), show_col_types = FALSE)
+names(clade1_clusters_df)[1] <- "genomeID"
+
+clade1_clusters_df <- clade1_clusters_df %>%
+  mutate(clade = "I",
+         clade_cluster = paste0(clade, "-", cluster))
+
+# --- Combine ---
+combined_clusters_df <- bind_rows(clade1_clusters_df, clade2_clusters_df)
+
+# --- Save ---
+dir.create(here("data", "metadata"), showWarnings = FALSE, recursive = TRUE)
+write_csv(combined_clusters_df, here("data", "metadata", "combined_clusters_df.csv"))
+```
+## combine with demographics information
+```{r}
+# Join with combined_data
+combined_data_with_clusters <- combined_data %>%
+  left_join(combined_clusters_df, by = "genomeID")
+
+# Join with combined_data_single_isolate (isolate == "a")
+combined_data_single_isolate_with_clusters <- combined_data_single_isolate %>%
+  left_join(combined_clusters_df, by = "genomeID")
+```
+
+## Summary Table
+```{r}
+library(table1)
+library(dplyr)
+library(labelled)
+
+# Format categorical variable for clarity
+combined_data_single_isolate_with_clusters$GenderCode <- factor(combined_data_single_isolate_with_clusters$GenderCode,
+                                                  levels = c("F", "M"),
+                                                  labels = c("Female", "Male"))
+
+combined_data_single_isolate_with_clusters$inpatient <- factor(combined_data_single_isolate_with_clusters$inpatient,
+                                                 levels = c(0, 1),
+                                                 labels = c("Outpatient", "Inpatient"))
+
+combined_data_single_isolate_with_clusters$hospital_onset <- factor(combined_data_single_isolate_with_clusters$hospital_onset,
+                                                      levels = c(0, 1),
+                                                      labels = c("Community", "Hospital"))
+
+# Assign labels
+label(combined_data_single_isolate_with_clusters$AdmitAge) <- "Age"
+label(combined_data_single_isolate_with_clusters$BMI) <- "BMI"
+label(combined_data_single_isolate_with_clusters$AdmissionType) <- "Admission Type"
+label(combined_data_single_isolate_with_clusters$GenderCode) <- "Sex"
+label(combined_data_single_isolate_with_clusters$RaceName) <- "Race"
+label(combined_data_single_isolate_with_clusters$LOS) <- "Length of Stay (days)"
+label(combined_data_single_isolate_with_clusters$inpatient) <- "Patient Status"
+label(combined_data_single_isolate_with_clusters$hospital_onset) <- "Onset Type"
+
+# Generate Table 1 (no grouping)
+table1(~ AdmitAge + BMI + AdmissionType + 
+         GenderCode + RaceName + LOS + inpatient + hospital_onset,
+       data = combined_data_single_isolate_with_clusters %>% filter(!is.na(clade)))
+```
+
+
+# Initial exploration of locations and linkages
+```{r, message=FALSE, warning=FALSE, results='hide'}
+library("tidyverse")
+library("lubridate")
+library("here")
+library("data.table")
+library("ggthemes")
+library("ggpubr")
+library("openxlsx")
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+# patient locations
+locations <- read_tsv(here('data', 'metadata', 'locations_from_wiens_group_filtered.tsv'))
+
+#patient ids
+pateint_ids <- read_csv(here('data', 'metadata', 'sampleid_patientid.csv'))
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+ids_filtered <- pateint_ids %>%
+  filter(sample_id %in% patient_data$sample_id)
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+locations_filtered <- locations %>% 
+  left_join(patient_data, by = c("PatientID" = "RDW_patient_id")) %>% 
+  filter(EndDate > StartDate, StartDate >= "2016-02-02" & StartDate <= "2017-12-31")
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+# Filter to rows where it seems like C diff was collected during that location row 
+locations_where_cdiff_collected <- locations_filtered %>%
+  filter(as.Date(collection_date) == as.Date(Date)) %>%
+  filter(collection_date > StartDate & collection_date < EndDate) %>%
+  distinct()
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+locations_with_st <- locations_filtered %>% 
+  left_join(patient_and_mlst, by = c("PatientID" = "RDW_patient_id")) %>% 
+  filter(!is.na(ST), EndDate > StartDate, StartDate < "2018-01-01") %>%
+  select(-ends_with(".y")) %>%
+  rename_with(~ sub("\\.x$", "", .), ends_with(".x")) %>%
+  distinct()
+```
+
+## Locations distribution
+```{r}
+library(dplyr)
+
+# Total unique patients
+total_patients <- locations_filtered %>%
+  summarise(unique_patients = n_distinct(PatientID))
+
+# How many patients were in each Unit
+unit_patient_counts <- locations_filtered %>%
+  select(PatientID, Unit) %>%
+  distinct() %>%
+  count(Unit, name = "n_patients") %>%
+  arrange(desc(n_patients))
+
+# View results
+total_patients
+unit_patient_counts
+```
+## Overall Overlaps
+```{r, message=FALSE, warning=FALSE, results='hide'}
+library(data.table)
+
+# Convert to data.table
+df <- locations_with_st %>%
+  select(PatientID, FacilityCode, Unit, Room, StartDate, EndDate, ST, clade, sorted_ST, secondary_isolate) %>%
+  distinct()
+dt <- as.data.table(df)
+setkey(dt, StartDate, EndDate)
+
+# Self join to find overlaps
+overlaps <- foverlaps(dt, dt, by.x = c("StartDate", "EndDate"), type = "any", nomatch = 0L)
+
+# Remove self-matches
+overlaps <- overlaps[PatientID != i.PatientID]
+
+# Create unique pair IDs
+overlaps[, pair_id := paste0(pmin(PatientID, i.PatientID), "_", pmax(PatientID, i.PatientID))]
+overlaps <- unique(overlaps, by = "pair_id")
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+facility_overlap <- overlaps[FacilityCode == i.FacilityCode]
+
+unit_overlap <- overlaps[FacilityCode == i.FacilityCode & Unit == i.Unit]
+
+room_overlap <- overlaps[FacilityCode == i.FacilityCode & Unit == i.Unit & Room == i.Room]
+```
+
+```{r}
+library(data.table)
+library(dplyr)
+
+# overlaps: full overlap table from foverlaps
+# facility_overlap, unit_overlap, room_overlap: filtered subsets
+
+facility_summary <- facility_overlap[
+  , .(n_pairs = uniqueN(pair_id)), 
+  by = .(FacilityCode)
+]
+facility_summary
+
+unit_summary <- unit_overlap[
+  , .(n_pairs = uniqueN(pair_id)), 
+  by = .(FacilityCode, Unit)
+]
+unit_summary
+
+room_summary <- room_overlap[
+  , .(n_pairs = uniqueN(pair_id)), 
+  by = .(FacilityCode, Unit, Room)
+]
+room_summary
+```
+## Overlap with same ST
+
+```{r}
+library(data.table)
+library(dplyr)
+
+# 1. Filter for overlapping pairs where STs match
+facility_overlap_sameST <- overlaps[
+  FacilityCode == i.FacilityCode & ST == i.ST
+]
+
+unit_overlap_sameST <- overlaps[
+  FacilityCode == i.FacilityCode & Unit == i.Unit & ST == i.ST
+]
+
+room_overlap_sameST <- overlaps[
+  FacilityCode == i.FacilityCode & Unit == i.Unit & Room == i.Room & ST == i.ST
+]
+
+# 2. Summarize overlapping pairs with same ST at each level
+facility_summary_sameST <- facility_overlap_sameST[
+  , .(n_pairs = uniqueN(pair_id)), 
+  by = .(FacilityCode)
+]
+facility_summary_sameST
+
+unit_summary_sameST <- unit_overlap_sameST[
+  , .(n_pairs = uniqueN(pair_id)), 
+  by = .(FacilityCode, Unit)
+]
+unit_summary_sameST
+
+room_summary_sameST <- room_overlap_sameST[
+  , .(n_pairs = uniqueN(pair_id)), 
+  by = .(FacilityCode, Unit, Room)
+]
+room_summary_sameST 
+```
+## Sequential Overlap Detection
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library("readr")
+library("tidyverse")
+library("readxl")
+library("here")
+library("RColorBrewer")
+library("knitr")
+library("ggthemes")
+library(data.table)
+```
+
+```{r import-data, warning = FALSE, message = FALSE}
+############################
+# import relevant datasets
+############################
+ids <- read_csv(here('data','metadata','cleaned_passed_genomeid.csv'), col_names = FALSE)$X1
+
+patient_data <- read_csv(here("data","metadata", "hospital_onset_data.csv")) %>%
+  filter(genome_id %in% ids)
+
+mlst_data <- read_tsv(here("data", "metadata", "mlst_replaced.tsv")) %>%
+  mutate(ST = str_remove(ST, "\\*"))
+
+main_wiens<- read_tsv(here("data", "metadata", "main_from_wiens_group_filtered_cdiff_cases.tsv")) %>%
+  arrange(PatientID, Date)
+
+# patient locations
+locations <- read_tsv(here('data', 'metadata', 'locations_from_wiens_group_filtered.tsv'))
+
+#patient ids
+pateint_ids <- read_csv(here('data', 'metadata', 'sampleid_patientid.csv'))
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+ids_filtered <- pateint_ids %>%
+  filter(sample_id %in% patient_data$sample_id)
+```
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+locations_filtered <- locations %>% 
+  left_join(patient_data, by = c("PatientID" = "RDW_patient_id")) %>% 
+  filter(EndDate > StartDate, StartDate >= "2016-02-02" & StartDate <= "2017-12-31")
+```
+
+```{r merge-datasets, warning = FALSE, message = FALSE, echo = FALSE}
+##############################
+# to those that are sequenced
+##############################
+patient_and_mlst <- inner_join(patient_data, mlst_data, by = "genome_id")
+```
+
+```{r}
+locations_with_st <- locations_filtered %>% 
+  left_join(patient_and_mlst, by = c("PatientID" = "RDW_patient_id")) %>% 
+  filter(!is.na(ST), EndDate > StartDate, StartDate < "2018-01-01") %>%
+  select(-ends_with(".y")) %>%
+  rename_with(~ sub("\\.x$", "", .), ends_with(".x")) %>%
+  distinct()
+# Convert to data.table
+df <- locations_with_st %>%
+  select(PatientID, FacilityCode, Unit, Room, StartDate, EndDate, ST, clade, sorted_ST, secondary_isolate) %>%
+  distinct()
+dt <- as.data.table(df)
+```
+
+### Same Unit
+```{r}
+# Sort by Facility, Unit, StartDate
+setorder(dt, FacilityCode, Unit, StartDate)
+
+# Within each unit, find next stay (ignore Room)
+sequential_unit <- dt[, .SD[order(StartDate)], by = .(FacilityCode, Unit)][
+  , `:=`(next_PatientID = shift(PatientID, type = "lead"),
+         next_StartDate = shift(StartDate, type = "lead"),
+         next_EndDate = shift(EndDate, type = "lead"),
+         next_ST = shift(ST, type = "lead"),
+         next_clade = shift(clade, type = "lead"),
+         next_Room = shift(Room, type = "lead")),
+  by = .(FacilityCode, Unit)
+][
+  !is.na(next_PatientID) & PatientID != next_PatientID & EndDate <= next_StartDate
+][
+  , time_between_days := as.integer(difftime(next_StartDate, EndDate, units = "days"))
+]
+
+# Show sequential transitions with ≤30 days between stays
+sequential_transfers_unit <- sequential_unit[time_between_days <= 30]
+
+# Example output
+sequential_transfers_unit[, .(FacilityCode, Unit, Room,
+                         from = PatientID, to = next_PatientID,
+                         from_end = EndDate, to_start = next_StartDate,
+                         time_between_days,
+                         ST, next_ST, clade, next_clade)]
+```
+
+```{r}
+sameST_unit <- sequential_transfers_unit[ST == next_ST]
+sameST_unit[, .(FacilityCode, Unit, Room,
+                         from = PatientID, to = next_PatientID,
+                         from_end = EndDate, to_start = next_StartDate,
+                         time_between_days,
+                         ST, next_ST, clade, next_clade)]
+```
+
+### Same Room
+```{r}
+# Sort by Facility, Unit, Room, StartDate
+setorder(dt, FacilityCode, Unit, Room, StartDate)
+
+# Within each room, find next stay
+sequential_room <- dt[, .SD[order(StartDate)], by = .(FacilityCode, Unit, Room)][
+  , `:=`(next_PatientID = shift(PatientID, type = "lead"),
+         next_StartDate = shift(StartDate, type = "lead"),
+         next_EndDate = shift(EndDate, type = "lead"),
+         next_ST = shift(ST, type = "lead"),
+         next_clade = shift(clade, type = "lead")),
+  by = .(FacilityCode, Unit, Room)
+][
+  !is.na(next_PatientID) & PatientID != next_PatientID & EndDate <= next_StartDate
+][
+  , time_between_days := as.integer(difftime(next_StartDate, EndDate, units = "days"))
+]
+
+# Show sequential transitions with ≤30 days between stays
+sequential_transfers_room <- sequential_room[time_between_days <= 30]
+
+# Example output
+sequential_transfers_room[, .(FacilityCode, Unit, Room,
+                         from = PatientID, to = next_PatientID,
+                         from_end = EndDate, to_start = next_StartDate,
+                         time_between_days,
+                         ST, next_ST, clade, next_clade)]
+```
+
+```{r}
+sameST_room <- sequential_transfers_room[ST == next_ST]
+sameST_room[, .(FacilityCode, Unit, Room,
+                         from = PatientID, to = next_PatientID,
+                         from_end = EndDate, to_start = next_StartDate,
+                         time_between_days,
+                         ST, next_ST, clade, next_clade)]
+```
+
+### Visualization
+```{r}
+# Long format for Unit
+unit_long <- rbind(
+  sequential_unit[, .(FacilityCode, Unit, Room, PatientID, StartDate, EndDate, ST)],
+  sequential_unit[, .(FacilityCode, Unit, Room, PatientID = next_PatientID,
+                      StartDate = next_StartDate, EndDate = next_EndDate, ST = next_ST)]
+) %>% distinct()
+
+unit_long[, UnitID := paste(FacilityCode, Unit, sep = "_")]
+
+
+## Long format for Room
+room_long <- rbind(
+  sequential_room[, .(FacilityCode, Unit, Room, PatientID, StartDate, EndDate, ST)],
+  sequential_room[, .(FacilityCode, Unit, Room, PatientID = next_PatientID,
+                      StartDate = next_StartDate, EndDate = next_EndDate, ST = next_ST)]
+) %>% distinct()
+
+room_long[, RoomID := paste(FacilityCode, Unit, Room, sep = "_")]
+```
+### Sequential overlaps by Unit
+```{r}
+ggplot(unit_long, aes(x = StartDate, xend = EndDate, 
+                      y = UnitID, yend = UnitID, 
+                      color = as.factor(ST))) +
+  geom_segment(size = 3) +
+  labs(title = "Sequential Stays in Same Unit", 
+       x = "Date", y = "Unit", color = "ST") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 6))
+```
+
+### Sequential overlaps by Room
+```{r}
+ggplot(unit_long, aes(x = StartDate, xend = EndDate, 
+                      y = UnitID, yend = UnitID, 
+                      color = as.factor(ST))) +
+  geom_segment(size = 3) +
+  labs(title = "Sequential Stays in Same Unit", 
+       x = "Date", y = "Unit", color = "ST") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 6))
+```
+### Same ST by unit
+```{r}
+unit_long_sameST <- rbind(
+  sameST_unit[, .(FacilityCode, Unit, Room, PatientID, StartDate, EndDate, ST)],
+  sameST_unit[, .(FacilityCode, Unit, Room, PatientID = next_PatientID,
+                  StartDate = next_StartDate, EndDate = next_EndDate, ST = next_ST)]
+) %>% distinct()
+
+unit_long_sameST[, UnitID := paste(FacilityCode, Unit, sep = "_")]
+
+ggplot(unit_long_sameST, aes(x = StartDate, xend = EndDate, 
+                             y = UnitID, yend = UnitID, 
+                             color = as.factor(ST))) +
+  geom_segment(size = 3) +
+  labs(title = "Sequential Stays in Same Unit (Same ST)", 
+       x = "Date", y = "Unit", color = "ST") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 6))
+```
+### Same ST by Room
+```{r}
+room_long_sameST <- rbind(
+  sameST_room[, .(FacilityCode, Unit, Room, PatientID, StartDate, EndDate, ST)],
+  sameST_room[, .(FacilityCode, Unit, Room, PatientID = next_PatientID,
+                  StartDate = next_StartDate, EndDate = next_EndDate, ST = next_ST)]
+) %>% distinct()
+
+room_long_sameST[, RoomID := paste(FacilityCode, Unit, Room, sep = "_")]
+
+ggplot(room_long_sameST, aes(x = StartDate, xend = EndDate, 
+                             y = RoomID, yend = RoomID, 
+                             color = as.factor(ST))) +
+  geom_segment(size = 3) +
+  labs(title = "Sequential Stays in Same Room (Same ST)", 
+       x = "Date", y = "Room", color = "ST") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 5))
+```
+### Summary Table
+```{r}
+library(data.table)
+
+# 1. Summary for sequential overlaps in same Unit
+summary_unit <- sequential_unit[
+  , .(
+    n_pairs = .N,
+    min_days = min(time_between_days, na.rm = TRUE),
+    max_days = max(time_between_days, na.rm = TRUE),
+    mean_days = round(mean(time_between_days, na.rm = TRUE), 1),
+    median_days = median(time_between_days, na.rm = TRUE)
+  )
+]
+
+# 2. Summary for sequential overlaps in same Room
+summary_room <- sequential_room[
+  , .(
+    n_pairs = .N,
+    min_days = min(time_between_days, na.rm = TRUE),
+    max_days = max(time_between_days, na.rm = TRUE),
+    mean_days = round(mean(time_between_days, na.rm = TRUE), 1),
+    median_days = median(time_between_days, na.rm = TRUE)
+  )
+]
+
+# 3. Combine into one summary table
+summary_table <- rbind(
+  data.table(type = "Same Unit", summary_unit),
+  data.table(type = "Same Room", summary_room)
+)
+
+# 4. Display
+summary_table
+```
+
+### Sensitivity Test
+```{r}
+cutoffs <- c(7, 14, 30, 60)
+
+unit_sensitivity <- lapply(cutoffs, function(cutoff) {
+  sequential_unit[time_between_days <= cutoff, .N]
+}) %>%
+  unlist()
+
+unit_sensitivity_df <- data.table(
+  Cutoff_Days = cutoffs,
+  N_Pairs = unit_sensitivity,
+  Total_Pairs = nrow(sequential_unit),
+  Percent_Included = round(100 * unit_sensitivity / nrow(sequential_unit), 1)
+)
+
+room_sensitivity <- lapply(cutoffs, function(cutoff) {
+  sequential_room[time_between_days <= cutoff, .N]
+}) %>%
+  unlist()
+
+room_sensitivity_df <- data.table(
+  Cutoff_Days = cutoffs,
+  N_Pairs = room_sensitivity,
+  Total_Pairs = nrow(sequential_room),
+  Percent_Included = round(100 * room_sensitivity / nrow(sequential_room), 1)
+)
+
+unit_sensitivity_df[, Type := "Same Unit"]
+room_sensitivity_df[, Type := "Same Room"]
+
+sensitivity_summary <- rbind(unit_sensitivity_df, room_sensitivity_df)
+sensitivity_summary
+```
+```{r}
+library(ggplot2)
+
+ggplot(sensitivity_summary, aes(x = Cutoff_Days, y = Percent_Included, color = Type)) +
+  geom_line(size = 1.2) +
+  geom_point(size = 3) +
+  labs(title = "Sensitivity Analysis of Sequential Overlap Cutoffs",
+       x = "Cutoff (days between stays)",
+       y = "Percent of Sequential Pairs Included",
+       color = "Type") +
+  scale_x_continuous(breaks = cutoffs) +
+  theme_minimal()
+```
+#### Same ST
+```{r}
+summary_sameST_unit <- sameST_unit[
+  , .(
+    n_pairs = .N,
+    min_days = min(time_between_days, na.rm = TRUE),
+    max_days = max(time_between_days, na.rm = TRUE),
+    mean_days = round(mean(time_between_days, na.rm = TRUE), 1),
+    median_days = median(time_between_days, na.rm = TRUE)
+  )
+]
+
+summary_sameST_room <- sameST_room[
+  , .(
+    n_pairs = .N,
+    min_days = min(time_between_days, na.rm = TRUE),
+    max_days = max(time_between_days, na.rm = TRUE),
+    mean_days = round(mean(time_between_days, na.rm = TRUE), 1),
+    median_days = median(time_between_days, na.rm = TRUE)
+  )
+]
+
+summary_sameST_table <- rbind(
+  data.table(type = "Same Unit (Same ST)", summary_sameST_unit),
+  data.table(type = "Same Room (Same ST)", summary_sameST_room)
+)
+
+summary_sameST_table
+```
+```{r}
+cutoffs <- c(7, 14, 30)
+
+sameST_unit_sensitivity <- lapply(cutoffs, function(cutoff) {
+  sameST_unit[time_between_days <= cutoff, .N]
+}) %>% unlist()
+
+sameST_unit_df <- data.table(
+  Cutoff_Days = cutoffs,
+  N_Pairs = sameST_unit_sensitivity,
+  Total_Pairs = nrow(sameST_unit),
+  Percent_Included = round(100 * sameST_unit_sensitivity / nrow(sameST_unit), 1),
+  Type = "Same Unit (Same ST)"
+)
+
+sameST_room_sensitivity <- lapply(cutoffs, function(cutoff) {
+  sameST_room[time_between_days <= cutoff, .N]
+}) %>% unlist()
+
+sameST_room_df <- data.table(
+  Cutoff_Days = cutoffs,
+  N_Pairs = sameST_room_sensitivity,
+  Total_Pairs = nrow(sameST_room),
+  Percent_Included = round(100 * sameST_room_sensitivity / nrow(sameST_room), 1),
+  Type = "Same Room (Same ST)"
+)
+
+sameST_sensitivity_table <- rbind(sameST_unit_df, sameST_room_df)
+sameST_sensitivity_table
+```
+
+### Visualization (30 days cutoff)
+### Sequential overlaps by Unit
+```{r}
+ggplot(unit_long, aes(x = StartDate, xend = EndDate, 
+                      y = UnitID, yend = UnitID, 
+                      color = as.factor(ST))) +
+  geom_segment(size = 3) +
+  labs(title = "Sequential Stays in Same Unit", 
+       x = "Date", y = "Unit", color = "ST") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 6))
+```
+
+### Sequential overlaps by Room
+```{r}
+ggplot(unit_long, aes(x = StartDate, xend = EndDate, 
+                      y = UnitID, yend = UnitID, 
+                      color = as.factor(ST))) +
+  geom_segment(size = 3) +
+  labs(title = "Sequential Stays in Same Unit", 
+       x = "Date", y = "Unit", color = "ST") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 6))
+```
+### Same ST by unit
+```{r}
+unit_long_sameST <- rbind(
+  sameST_unit[, .(FacilityCode, Unit, Room, PatientID, StartDate, EndDate, ST)],
+  sameST_unit[, .(FacilityCode, Unit, Room, PatientID = next_PatientID,
+                  StartDate = next_StartDate, EndDate = next_EndDate, ST = next_ST)]
+) %>% distinct()
+
+unit_long_sameST[, UnitID := paste(FacilityCode, Unit, sep = "_")]
+
+ggplot(unit_long_sameST, aes(x = StartDate, xend = EndDate, 
+                             y = UnitID, yend = UnitID, 
+                             color = as.factor(ST))) +
+  geom_segment(size = 3) +
+  labs(title = "Sequential Stays in Same Unit (Same ST)", 
+       x = "Date", y = "Unit", color = "ST") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 6))
+```
+### Same ST by Room
+```{r}
+room_long_sameST <- rbind(
+  sameST_room[, .(FacilityCode, Unit, Room, PatientID, StartDate, EndDate, ST)],
+  sameST_room[, .(FacilityCode, Unit, Room, PatientID = next_PatientID,
+                  StartDate = next_StartDate, EndDate = next_EndDate, ST = next_ST)]
+) %>% distinct()
+
+room_long_sameST[, RoomID := paste(FacilityCode, Unit, Room, sep = "_")]
+
+ggplot(room_long_sameST, aes(x = StartDate, xend = EndDate, 
+                             y = RoomID, yend = RoomID, 
+                             color = as.factor(ST))) +
+  geom_segment(size = 3) +
+  labs(title = "Sequential Stays in Same Room (Same ST)", 
+       x = "Date", y = "Room", color = "ST") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(size = 5))
+```

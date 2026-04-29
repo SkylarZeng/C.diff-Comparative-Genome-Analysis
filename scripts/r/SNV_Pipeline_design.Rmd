@@ -1,0 +1,188 @@
+---
+title: "Untitled"
+author: "Skylar Zeng"
+date: "2026-03-18"
+output: html_document
+---
+
+Modular SNV Distance Pipeline Design
+
+This document outlines a modular R pipeline to compute core, soft‑core and non‑core
+single nucleotide variant (SNV) distances from whole‑genome alignments.  It
+summarises the biological assumptions, computational steps and recommended
+parameters, and proposes functions implemented in the accompanying
+snv_pipeline_skeleton.R script.
+
+Biological definitions and assumptions
+	•	Core sites – positions where all genomes in the alignment carry a
+valid unambiguous base.  Strict core filtering discards any site that has a
+missing value in any genome.  As described in the Core‑SNP‑filter tool,
+invariant sites (positions with zero or one unique unambiguous base) are
+treated separately from core/non‑core status ￼.
+	•	Soft‑core sites – positions retained if a specified proportion of genomes
+have valid bases.  Recent work demonstrates that allowing a small amount of
+missing data (for example retaining sites where ≥95 % of genomes have
+unambiguous bases) preserves many more informative sites than a strict core
+filter ￼.  The proportion threshold should be user
+adjustable; by default the pipeline allows up to 10 % missingness (i.e. a
+90 % core).
+	•	Non‑core distances – distances calculated without global site filtering,
+comparing each pair of genomes across only the positions where both genomes have
+data.  Pairwise deletion of missing sites is therefore required.
+	•	Missing data – the characters N, n, -, ?, . and other
+ambiguous codes are treated as missing.  The pipeline allows this set to be
+customised.
+	•	Genome quality – genomes with excessive missingness should be removed
+before computing distances.  Studies using whole‑genome alignments have
+excluded genomes with more than 10 % ambiguous bases ￼, so
+10 % missingness is used as the default genome‑level filter.  Users can adjust
+this cutoff and inspect the distribution of genome missingness to choose
+appropriate thresholds.
+	•	Distance model – pairwise distances are computed with ape::dist.dna
+using the “N” model, which returns the number of differing sites between
+sequences.  For core and soft‑core distances, sites with missing data are
+removed globally; for non‑core distances, pairwise deletion of missing data
+ensures comparisons use only overlapping valid sites ￼.
+
+Pipeline overview
+
+The pipeline can be divided into three major sections:
+	1.	Pre‑Gubbins alignment QC and distances
+	2.	Recombination masking summaries (Gubbins outputs)
+	3.	Post‑Gubbins alignment QC and distances
+
+An optional step masks positions in the post‑Gubbins alignment that had any
+missingness in the pre‑alignment.  Each section performs similar tasks:
+	•	read alignments;
+	•	compute genome‑ and site‑level missingness;
+	•	filter genomes on a missingness threshold;
+	•	identify core and soft‑core sites for multiple thresholds;
+	•	calculate core, soft‑core and non‑core SNV distances;
+	•	summarise and visualise missingness, retained sites and distance distributions;
+	•	record the number of genomes and positions retained at each step.
+
+Recommended workflow
+	1.	Read pre‑Gubbins alignment using read_alignment(), which returns
+DNAStringSet and DNAbin representations.
+	2.	Compute a valid‑position matrix with valid_position_matrix(), marking
+positions that are non‑missing for each genome.
+	3.	Summarise the alignment via summarise_alignment(), reporting the
+number of genomes, alignment length, number of invariant and variable sites,
+and overall missingness.
+	4.	Assess missingness:
+	•	genome_missingness() returns the number and proportion of missing positions
+per genome.  Plot the distribution with plot_genome_missingness() to
+identify outliers.  Remove genomes exceeding the chosen missingness
+threshold via filter_genomes().
+	•	site_missingness() computes missingness per site.  Plot using
+plot_site_missingness() to visualise highly missing positions.
+	5.	Define core and soft‑core sites using identify_core_sites() with
+different thresholds (e.g. 1.0 for strict core; 0.9 for a 90 % core) and
+generate a retention curve with soft_core_retention() and
+plot_soft_core_retention() to illustrate how site counts change with
+decreasing core thresholds ￼.
+	6.	Compute SNV distances with compute_snv_distances().  For core and
+soft‑core distances, supply the logical vector of retained sites.  For
+non‑core distances, set the core_sites argument to NULL to enable
+pairwise deletion of missing sites.  Convert to long format using
+distance_matrix_to_long() and summarise with summarise_distances().
+	7.	Recombination masking summaries (optional): use summarise_masking() to
+count the number and proportion of positions masked by Gubbins and, if
+possible, summarise block lengths.  Visualise the location of masked blocks
+along the genome using an appropriate plotting function (to be developed).
+	8.	Mask post‑Gubbins alignment positions based on missingness in the
+pre‑alignment with mask_post_based_on_pre().  This ensures that post‑core
+sites are a subset of pre‑core sites when desired.
+	9.	Repeat steps 1–6 for the post‑Gubbins alignment, recording the number of
+genomes and positions retained and summarising the new distance matrices.
+	10.	Cross‑step comparison: compile tables comparing pre‑ and post‑Gubbins
+results, including numbers of retained genomes/sites, proportions of
+missingness, retained variant sites, and statistics of pairwise distances.
+Visualise distributions of distances across methods using
+plot_distance_distributions().
+	11.	Final outputs: organise all tables, figures and log files in a
+structured output directory.  Optionally generate a flowchart summarising
+the numbers of genomes and positions at each stage and implement an
+RMarkdown report to document the run.
+
+Implementation notes
+
+The provided snv_pipeline_skeleton.R script implements the core analytical
+functions described above.  These functions are deliberately modular; they do
+not read from or write to disk, plot figures, or parse command line
+arguments.  A separate wrapper script should:
+	•	parse user‑supplied parameters (input file paths, missingness thresholds,
+core thresholds, output directories, options to mask post‑alignment etc.);
+	•	call the functions in the appropriate order for pre‑ and post‑Gubbins
+alignments;
+	•	generate plots and write tables/figures to disk with informative file names;
+	•	produce log messages detailing the parameters used and the number of
+genomes/sites retained at each step;
+	•	integrate with a SLURM batch script to run on high‑performance computing
+clusters.
+
+Handling of missing data
+
+Missing characters are defined by default as N, n, -, ?, . and
+ambiguous codes such as X.  Users may customise this set if, for example,
+lower‑case bases should be treated differently.  The function
+valid_position_matrix() generates a logical matrix indicating where bases are
+present, which is used throughout the pipeline.
+
+Genome filtering
+
+Filtering genomes with more than a specified proportion of missing data helps
+avoid artifacts from low‑quality sequences.  The default threshold is 10 %
+missingness in line with published analyses of bacterial genomes ￼.
+filter_genomes() returns both the filtered alignment and the identifiers of
+removed genomes so they can be reported in QC summaries.
+
+Core and soft‑core definitions
+
+The pipeline implements core and soft‑core definitions following the
+Core‑SNP‑filter logic: a site is retained if the proportion of genomes with a
+valid base at that site exceeds a user‑defined threshold ￼.  All
+non‑A/C/G/T characters are treated identically.  Soft‑core thresholds can be
+swept across a range (e.g. 1.0 down to 0.8) to assess the trade‑off between
+missingness tolerance and alignment length ￼.
+
+Distance calculation
+
+Pairwise SNV distances are calculated using the ape::dist.dna function with
+the “N” model.  This returns the number of differing sites between sequences,
+and the pairwise.deletion argument controls how missing data are handled
+￼.  For core and soft‑core alignments, pairwise.deletion is
+set to FALSE because all missing data have been removed by site filtering.
+For non‑core distances, pairwise.deletion is set to TRUE so that each
+pairwise comparison uses only overlapping positions.
+
+Recombination masking
+
+To summarise recombination masking, the pipeline includes a generic
+summarise_masking() function that reads a list of masked positions and
+reports how many sites are masked and what proportion of the genome this
+represents.  If start–end ranges are provided, the function also returns the
+lengths of masked blocks.  Custom parsing may be needed for different
+Gubbins output formats.
+
+Post‑alignment masking
+
+The optional mask_post_based_on_pre() function replicates the behaviour of
+manual masking scripts: it replaces positions in the post‑Gubbins alignment
+with N wherever any genome in the pre‑alignment had missing data.  This
+ensures that post‑Gubbins core/soft‑core analyses consider only positions that
+were unambiguous in the pre‑alignment.
+
+Next steps
+	•	Implement a command‑line interface (CLI) or configuration file to drive the
+pipeline, allowing users to specify input files, thresholds and options.
+	•	Add detailed plotting functions for recombination masking and cross‑step
+comparisons.
+	•	Produce an RMarkdown report template that assembles the QC summaries,
+figures and distance tables into a human‑readable report.
+	•	Integrate the pipeline into a SLURM batch script to run on a cluster,
+capturing logs and outputs in a systematic fashion.
+
+By structuring the pipeline around modular functions and explicit definitions,
+users can confidently compute SNV distances while preserving information and
+identifying potential artifacts introduced by filtering and masking.

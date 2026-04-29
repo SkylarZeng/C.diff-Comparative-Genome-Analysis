@@ -1,0 +1,432 @@
+---
+title: "Build Pair Table for Case-Control Analysis (Clade 2)"
+author: "Skylar Zeng"
+date: "`r format(Sys.Date())`"
+output: html_document
+---
+
+# Setup
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(tidyverse)
+library(lubridate)
+library(here)
+library(readr)
+library(janitor)
+```
+
+## Paths and Parameters
+```{r}
+# Master linkage table
+master_linkage <- here("2025_analysis", "isolate_master.csv")
+
+# SNV distance files (clade 2)
+post_noncore <- here("data", "SNV_matrices", "clade2_post_noncore_snv_long.csv")
+post_softcore <- here("data", "SNV_matrices", "clade2_post_softcore_snv_long.csv")
+pre_core <- here("data", "SNV_matrices", "clade2_pre_core.csv")
+
+# MLST file
+mlst_file <- here("data", "metadata", "mlst_replaced.tsv")
+
+# Output directory
+output_dir <- here("2025_analysis")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+output_file <- here(output_dir, "pairs_core.csv")
+
+# Parameters
+snv_case_threshold <- 2      # Cases: SNV ≤2
+snv_control_threshold_1 <- 10 # Controls: SNV >10
+snv_control_threshold_2 <- 20 # Controls: SNV >20 (for sensitivity analysis)
+max_controls_per_case <- NULL # Set to a number (e.g., 10) to cap controls, or NULL for no cap
+set.seed(42)  # For reproducible random sampling if capping controls
+```
+
+# Load Data
+
+## Load master linkage table and filter to clade 2
+```{r}
+master <- read_csv(master_linkage, show_col_types = FALSE) %>%
+  filter(clade == 2) %>%
+  filter(!is.na(st))  # Only genomes with ST assigned
+
+cat("Clade 2 genomes with ST assigned:", nrow(master), "\n")
+cat("Unique STs in clade 2:", n_distinct(master$st), "\n")
+
+# Get list of valid genome IDs for clade 2
+clade2_genome_ids <- master$genome_id
+cat("Valid clade 2 genome IDs:", length(clade2_genome_ids), "\n")
+```
+
+## Load SNV distance files
+```{r}
+# Function to normalize genome IDs (handle CDIF_formed_ vs CDIF_SB_)
+normalize_genome_id <- function(id) {
+  # Remove reference genome entries
+  is_ref <- grepl("ref_genome|complete genome|R20291", id, ignore.case = TRUE)
+  # Return NA for reference genomes, otherwise keep ID as-is
+  ifelse(is_ref, NA_character_, id)
+}
+
+# Pre-core (wide format with reference genome)
+pre_core_raw <- read_csv(pre_core, show_col_types = FALSE) %>%
+  rename(snv_pre = snvs)
+
+# Post-noncore (long format)
+post_noncore_raw <- read_csv(post_noncore, show_col_types = FALSE) %>%
+  rename(snv_post_noncore = snvs)
+
+# Post-softcore (long format)
+post_softcore_raw <- read_csv(post_softcore, show_col_types = FALSE) %>%
+  rename(snv_post_softcore = snvs)
+
+cat("Pre-core pairs:", nrow(pre_core_raw), "\n")
+cat("Post-noncore pairs:", nrow(post_noncore_raw), "\n")
+cat("Post-softcore pairs:", nrow(post_softcore_raw), "\n")
+```
+
+## Process SNV distance data
+```{r}
+# Get all valid genome IDs (both CDIF_SB_ and CDIF_formed_ from master, plus check SNV files)
+all_snv_ids <- c(
+  pre_core_raw$id1, pre_core_raw$id2,
+  post_noncore_raw$id1, post_noncore_raw$id2,
+  post_softcore_raw$id1, post_softcore_raw$id2
+) %>%
+  unique() %>%
+  .[!grepl("ref_genome|complete genome|R20291", ., ignore.case = TRUE)]
+
+# Combine with master table IDs
+clade2_genome_ids_all <- unique(c(clade2_genome_ids, all_snv_ids))
+cat("Total unique genome IDs to consider:", length(clade2_genome_ids_all), "\n")
+
+# Process pre-core: filter to isolate pairs only (exclude reference genome)
+pre_core_clean <- pre_core_raw %>%
+  mutate(
+    id1_clean = normalize_genome_id(id1),
+    id2_clean = normalize_genome_id(id2)
+  ) %>%
+  filter(!is.na(id1_clean) & !is.na(id2_clean)) %>%
+  filter(id1_clean %in% clade2_genome_ids_all & id2_clean %in% clade2_genome_ids_all) %>%
+  select(id1 = id1_clean, id2 = id2_clean, snv_pre) %>%
+  # Ensure id1 < id2 to avoid duplicates
+  mutate(
+    id1_new = pmin(id1, id2),
+    id2_new = pmax(id1, id2)
+  ) %>%
+  select(id1 = id1_new, id2 = id2_new, snv_pre) %>%
+  distinct()
+
+# Process post-noncore
+post_noncore_clean <- post_noncore_raw %>%
+  mutate(
+    id1_clean = normalize_genome_id(id1),
+    id2_clean = normalize_genome_id(id2)
+  ) %>%
+  filter(!is.na(id1_clean) & !is.na(id2_clean)) %>%
+  filter(id1_clean %in% clade2_genome_ids_all & id2_clean %in% clade2_genome_ids_all) %>%
+  select(id1 = id1_clean, id2 = id2_clean, snv_post_noncore) %>%
+  mutate(
+    id1_new = pmin(id1, id2),
+    id2_new = pmax(id1, id2)
+  ) %>%
+  select(id1 = id1_new, id2 = id2_new, snv_post_noncore) %>%
+  distinct()
+
+# Process post-softcore
+post_softcore_clean <- post_softcore_raw %>%
+  mutate(
+    id1_clean = normalize_genome_id(id1),
+    id2_clean = normalize_genome_id(id2)
+  ) %>%
+  filter(!is.na(id1_clean) & !is.na(id2_clean)) %>%
+  filter(id1_clean %in% clade2_genome_ids_all & id2_clean %in% clade2_genome_ids_all) %>%
+  select(id1 = id1_clean, id2 = id2_clean, snv_post_softcore) %>%
+  mutate(
+    id1_new = pmin(id1, id2),
+    id2_new = pmax(id1, id2)
+  ) %>%
+  select(id1 = id1_new, id2 = id2_new, snv_post_softcore) %>%
+  distinct()
+
+cat("\nAfter filtering to clade 2 isolates:\n")
+cat("Pre-core pairs:", nrow(pre_core_clean), "\n")
+cat("Post-noncore pairs:", nrow(post_noncore_clean), "\n")
+cat("Post-softcore pairs:", nrow(post_softcore_clean), "\n")
+```
+
+## Join SNV distances and add ST information
+```{r}
+# Load MLST data to get ST for all genomes (including CDIF_formed_)
+mlst_all <- read_tsv(mlst_file, show_col_types = FALSE) %>%
+  clean_names() %>%
+  select(genome_id, st, clade) %>%
+  filter(clade == 2) %>%
+  filter(!is.na(st))
+
+cat("MLST data: clade 2 genomes with ST:", nrow(mlst_all), "\n")
+
+# Combine all SNV distances
+snv_all <- pre_core_clean %>%
+  full_join(post_noncore_clean, by = c("id1", "id2")) %>%
+  full_join(post_softcore_clean, by = c("id1", "id2"))
+
+# Add ST information for both genomes
+mlst_st <- mlst_all %>%
+  select(genome_id, st) %>%
+  rename(st1 = st)
+
+snv_with_st <- snv_all %>%
+  left_join(mlst_st, by = c("id1" = "genome_id")) %>%
+  left_join(mlst_st %>% rename(st2 = st1), by = c("id2" = "genome_id")) %>%
+  # Filter to within-ST pairs only
+  filter(!is.na(st1) & !is.na(st2)) %>%
+  filter(st1 == st2) %>%
+  mutate(st = st1) %>%
+  select(id1, id2, st, snv_pre, snv_post_noncore, snv_post_softcore)
+
+cat("\nWithin-ST pairs (clade 2):\n")
+cat("Total pairs:", nrow(snv_with_st), "\n")
+cat("STs represented:", n_distinct(snv_with_st$st), "\n")
+```
+
+# Build Pair Table
+
+## Create pair table for each pipeline
+```{r}
+# Function to create pair table for a given pipeline
+create_pair_table <- function(snv_col, pipeline_name) {
+  pairs <- snv_with_st %>%
+    mutate(snv = .data[[snv_col]]) %>%
+    select(id1, id2, st, snv) %>%
+    filter(!is.na(snv)) %>%
+    # Classify as case or control
+    mutate(
+      case_control = case_when(
+        snv <= snv_case_threshold ~ "case",
+        snv > snv_control_threshold_1 ~ "control_gt10",
+        TRUE ~ NA_character_  # Exclude pairs in between (3-10)
+      )
+    ) %>%
+    filter(!is.na(case_control)) %>%
+    # Add control_gt20 flag for sensitivity analysis
+    mutate(
+      control_gt20 = if_else(snv > snv_control_threshold_2, TRUE, FALSE)
+    ) %>%
+    mutate(pipeline = pipeline_name)
+  
+  return(pairs)
+}
+
+# Create pair tables for each pipeline
+pairs_pre <- create_pair_table("snv_pre", "pre_core")
+pairs_post_noncore <- create_pair_table("snv_post_noncore", "post_noncore")
+pairs_post_softcore <- create_pair_table("snv_post_softcore", "post_softcore")
+
+cat("Pre-core pairs:\n")
+cat("  Cases (SNV ≤2):", sum(pairs_pre$case_control == "case"), "\n")
+cat("  Controls (SNV >10):", sum(pairs_pre$case_control == "control_gt10"), "\n")
+cat("  Controls (SNV >20):", sum(pairs_pre$control_gt20), "\n")
+
+cat("\nPost-noncore pairs:\n")
+cat("  Cases (SNV ≤2):", sum(pairs_post_noncore$case_control == "case"), "\n")
+cat("  Controls (SNV >10):", sum(pairs_post_noncore$case_control == "control_gt10"), "\n")
+cat("  Controls (SNV >20):", sum(pairs_post_noncore$control_gt20), "\n")
+
+cat("\nPost-softcore pairs:\n")
+cat("  Cases (SNV ≤2):", sum(pairs_post_softcore$case_control == "case"), "\n")
+cat("  Controls (SNV >10):", sum(pairs_post_softcore$case_control == "control_gt10"), "\n")
+cat("  Controls (SNV >20):", sum(pairs_post_softcore$control_gt20), "\n")
+```
+
+## Optionally cap controls per case
+```{r}
+# If max_controls_per_case is set, randomly sample controls
+cap_controls <- function(pairs_df) {
+  if(is.null(max_controls_per_case)) {
+    return(pairs_df)
+  }
+  
+  # For each case, sample controls within the same ST
+  cases <- pairs_df %>%
+    filter(case_control == "case") %>%
+    select(id1, id2, st, pipeline)
+  
+  controls <- pairs_df %>%
+    filter(case_control == "control_gt10")
+  
+  # Sample controls per case
+  controls_sampled <- cases %>%
+    left_join(controls, by = c("st", "pipeline"), suffix = c("_case", "_control")) %>%
+    group_by(id1_case, id2_case, st, pipeline) %>%
+    sample_n(min(max_controls_per_case, n()), replace = FALSE) %>%
+    ungroup() %>%
+    select(id1 = id1_control, id2 = id2_control, st, snv, case_control, control_gt20, pipeline)
+  
+  # Combine cases and sampled controls
+  pairs_capped <- bind_rows(
+    pairs_df %>% filter(case_control == "case"),
+    controls_sampled
+  )
+  
+  return(pairs_capped)
+}
+
+# Apply capping if specified
+if(!is.null(max_controls_per_case)) {
+  cat("\nCapping controls to", max_controls_per_case, "per case...\n")
+  pairs_pre <- cap_controls(pairs_pre)
+  pairs_post_noncore <- cap_controls(pairs_post_noncore)
+  pairs_post_softcore <- cap_controls(pairs_post_softcore)
+  
+  cat("After capping:\n")
+  cat("Pre-core controls:", sum(pairs_pre$case_control == "control_gt10"), "\n")
+  cat("Post-noncore controls:", sum(pairs_post_noncore$case_control == "control_gt10"), "\n")
+  cat("Post-softcore controls:", sum(pairs_post_softcore$case_control == "control_gt10"), "\n")
+}
+```
+
+## Combine all pipelines and add metadata
+```{r}
+# Combine all pair tables
+pairs_all <- bind_rows(pairs_pre, pairs_post_noncore, pairs_post_softcore)
+
+# Prepare master table for joining
+master_join <- master %>%
+  select(genome_id, patient_id, collection_date, st) %>%
+  rename(
+    patient_i = patient_id,
+    collection_date_i = collection_date
+  )
+
+# Join metadata for genome_i (id1)
+pairs_final <- pairs_all %>%
+  left_join(master_join, by = c("id1" = "genome_id")) %>%
+  rename(
+    genome_i = id1,
+    genome_j = id2,
+    patient_i = patient_i,
+    collection_date_i = collection_date_i,
+    st_i = st.x
+  )
+
+# Join metadata for genome_j (id2)
+master_join_j <- master %>%
+  select(genome_id, patient_id, collection_date, st) %>%
+  rename(
+    patient_j = patient_id,
+    collection_date_j = collection_date
+  )
+
+pairs_final <- pairs_final %>%
+  left_join(master_join_j, by = c("genome_j" = "genome_id")) %>%
+  # Use ST from the pair (should be same for both)
+  mutate(st = st_i) %>%
+  select(genome_i, genome_j, patient_i, patient_j, st, pipeline, snv, 
+         case_control, collection_date_i, collection_date_j, control_gt20)
+
+cat("\nFinal pair table:\n")
+cat("Total pairs:", nrow(pairs_final), "\n")
+cat("Cases:", sum(pairs_final$case_control == "case"), "\n")
+cat("Controls (SNV >10):", sum(pairs_final$case_control == "control_gt10"), "\n")
+cat("Controls (SNV >20):", sum(pairs_final$control_gt20, na.rm = TRUE), "\n")
+cat("Pipelines:", paste(unique(pairs_final$pipeline), collapse = ", "), "\n")
+```
+
+## Summary statistics
+```{r}
+cat("\n=== PAIR TABLE SUMMARY ===\n\n")
+
+# Summary by pipeline and case_control
+summary_by_pipeline <- pairs_final %>%
+  group_by(pipeline, case_control) %>%
+  summarise(
+    n_pairs = n(),
+    mean_snv = round(mean(snv, na.rm = TRUE), 2),
+    median_snv = median(snv, na.rm = TRUE),
+    min_snv = min(snv, na.rm = TRUE),
+    max_snv = max(snv, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(summary_by_pipeline)
+
+# Summary by ST
+summary_by_st <- pairs_final %>%
+  filter(case_control == "case") %>%
+  group_by(st, pipeline) %>%
+  summarise(n_cases = n(), .groups = "drop") %>%
+  group_by(st) %>%
+  summarise(
+    total_cases = sum(n_cases),
+    pipelines = paste(unique(pipeline), collapse = ", "),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(total_cases))
+
+cat("\nTop STs by number of case pairs:\n")
+print(head(summary_by_st, 10))
+```
+
+# Save Output
+
+## Full pair table (includes pairs with NA patient_id)
+```{r}
+# Select final columns as specified
+pairs_output <- pairs_final %>%
+  select(
+    genome_i,
+    genome_j,
+    patient_i,
+    patient_j,
+    st,
+    pipeline,
+    snv,
+    case_control,
+    collection_date_i,
+    collection_date_j
+  ) %>%
+  arrange(pipeline, st, case_control, snv)
+
+# Save to CSV
+write_csv(pairs_output, output_file)
+cat("\n=== OUTPUT SAVED ===\n")
+cat("Pair table saved to:", output_file, "\n")
+cat("Total rows:", nrow(pairs_output), "\n")
+cat("Pairs with NA patient_i:", sum(is.na(pairs_output$patient_i)), "\n")
+cat("Pairs with NA patient_j:", sum(is.na(pairs_output$patient_j)), "\n")
+cat("Pairs with NA in either patient_id:", sum(is.na(pairs_output$patient_i) | is.na(pairs_output$patient_j)), "\n")
+cat("Columns:", paste(names(pairs_output), collapse = ", "), "\n")
+```
+
+## Filtered pair table (removes pairs with NA patient_id)
+```{r}
+# Filter out pairs where either patient_i or patient_j is NA
+pairs_filtered <- pairs_output %>%
+  filter(!is.na(patient_i) & !is.na(patient_j))
+
+# Create output filename with _filtered suffix
+output_file_filtered <- here(output_dir, "pairs_core_filtered.csv")
+
+# Save filtered table
+write_csv(pairs_filtered, output_file_filtered)
+
+cat("\n=== FILTERED OUTPUT SAVED ===\n")
+cat("Filtered pair table saved to:", output_file_filtered, "\n")
+cat("Total rows (after filtering):", nrow(pairs_filtered), "\n")
+cat("Rows removed:", nrow(pairs_output) - nrow(pairs_filtered), "\n")
+cat("Percentage retained:", round(100 * nrow(pairs_filtered) / nrow(pairs_output), 2), "%\n")
+
+# Summary of filtered data
+cat("\nFiltered pair table summary:\n")
+summary_filtered <- pairs_filtered %>%
+  group_by(pipeline, case_control) %>%
+  summarise(
+    n_pairs = n(),
+    mean_snv = round(mean(snv, na.rm = TRUE), 2),
+    .groups = "drop"
+  )
+
+print(summary_filtered)
+```
+
