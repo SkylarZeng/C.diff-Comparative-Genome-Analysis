@@ -1,6 +1,6 @@
 # C. difficile UM Transmission Portfolio
 
-This repository packages a representative genomic epidemiology project on *Clostridioides difficile* transmission into a GitHub-friendly portfolio. It highlights SNV distance pipeline design, clade-level clustering, patient/location overlap analysis, and the connection between genomic distances and hospital metadata.
+This repository includes a representative genomic epidemiology project on *Clostridioides difficile* transmission. It highlights SNV distance pipeline design, clade-level clustering, patient/location overlap analysis, and the connection between genomic distances and hospital metadata.
 
 If you want the full story in one file, start with `PROJECT_OUTLINE.md`.
 
