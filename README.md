@@ -7,10 +7,10 @@ If you want the full story in one file, start with `PROJECT_OUTLINE.md`.
 ## What This Repo Shows
 
 - `PROJECT_OUTLINE.md`: single-file walkthrough of the project, methods, code, and outputs
+- `scripts/`: main curated code package, organized similarly to the metagenomics portfolio
 - `code/`: refined step-by-step code layer with one small file per project stage
 - `source_code/`: mirrored code-only copy of the original project folder, preserving the broader working script and notebook tree
 - `docs/0410_labmeeting_slides.pdf`: presentation used to communicate intermediate findings
-- `scripts/`: curated notebooks, scripts, and SLURM entrypoints
 - `figures/`: representative output plots from the project
 - `data_summaries/`: selected summary tables used to interpret results
 
@@ -21,6 +21,7 @@ If you want the full story in one file, start with `PROJECT_OUTLINE.md`.
 - metadata integration across genomes, patients, sequence types, and locations
 - cluster visualization and overlap analysis
 - HPC execution through R scripts and SLURM
+- staged descriptive-analysis scripts for cluster and location workflows
 - integration of upstream QC, variant-calling, and core-gene alignment workflows
 
 ## Upstream Workflow Components
@@ -31,7 +32,7 @@ Before the custom downstream SNV analysis in this repository, the project also u
 - [`QCD`](https://github.com/Snitkin-Lab-Umich/QCD) and [`pubQCD`](https://github.com/Snitkin-Lab-Umich/pubQCD): used for QC and assembly-review steps in the broader analysis workflow
 - [`snpkit`](https://github.com/alipirani88/snpkit): used for microbial variant calling, QC outputs, and alignment generation steps feeding downstream SNV analyses
 
-Short, step-by-step versions of those stages are included in `code/` so a reviewer can follow the workflow in order without opening the full archive first.
+Short, step-by-step versions of those stages are included in `code/`, while the fuller curated script set lives in `scripts/` so a reviewer can inspect the real project workflow in more depth without opening the full archive first.
 
 ## Full Code Archive
 

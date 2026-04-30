@@ -16,4 +16,6 @@ Each file represents one stage of the workflow:
 
 These are intentionally smaller than the full project scripts. They show the logic of one step at a time.
 
+If you want the fuller curated code package, use `scripts/`.
+
 If you want the full original working tree, use `source_code/`.

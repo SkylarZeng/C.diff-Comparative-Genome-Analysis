@@ -6,6 +6,18 @@ The technical work spans pipeline design, comparative filtering strategies, anal
 
 This repository includes both a curated portfolio layer and a full code-only mirror of the original project so reviewers can choose either a guided overview or the broader working codebase.
 
+# What This File Contains
+
+- the biological and computational goal of the project
+- the end-to-end workflow in execution order
+- the main bash, SLURM, Quarto, and R code used at each stage
+- how the curated `scripts/` folder maps onto the larger project
+- selected outputs and interpretation
+
+# Computing Context
+
+Most of the workflow was developed in an HPC and shared-research-computing context. For that reason, many paths are absolute, some commands assume SLURM submission, and several scripts preserve the original directory structure from the live analysis environment. Those details are intentionally kept because they show how the project was actually executed.
+
 # Main Question
 
 The core question was how different SNV distance definitions and filtering choices affect transmission-oriented interpretation, especially:
@@ -17,10 +29,13 @@ The core question was how different SNV distance definitions and filtering choic
 
 # Repository Guide
 
+- `scripts/README.md` is the best entry point into the curated code package.
+- `scripts/bash/` contains the upstream QC and `snpkit` command workflows.
 - `scripts/r/SNV_Pipeline_design.Rmd` explains the modular pipeline design and assumptions.
 - `scripts/r/run_snv_pipeline.R` is the main executable wrapper for the SNV pipeline.
 - `scripts/r/snv_pipeline_skeleton.R` contains the modular helper functions.
 - `scripts/r/cdiff_cognac_070125.R` shows a project-specific `cognac` run used for core-gene alignment and distance generation.
+- `scripts/r/descriptive_analysis_presentation/` contains the larger stepwise cluster-visualization and epidemiology script collection copied from the original project.
 - `code/README.md` and the numbered files in `code/` provide a one-step-per-file review path through the project.
 - `source_code/` is a code-only mirror of the original project folder for reviewers who want the full working script tree rather than just the curated subset.
 - `scripts/r/2025-07-22_Preliminary_results_on_patient_and_location_data.Rmd` shows the earlier descriptive and metadata exploration.
@@ -44,6 +59,17 @@ If a reviewer wants the smallest possible code tour, the best path is:
 
 This layer is intentionally smaller than `source_code/`. Each file captures one step or one analysis rather than the full exploratory history.
 
+If a reviewer wants the fuller curated code path, the matching `scripts/` path is:
+
+1. `scripts/bash/01_qc_and_assembly_review.sh`
+2. `scripts/bash/02_variant_calling_with_snpkit.sh`
+3. `scripts/r/cdiff_cognac_070125.R`
+4. `scripts/r/SNV_Pipeline_design.Rmd`
+5. `scripts/r/run_snv_pipeline.R`
+6. `scripts/qmd/compare_core_vs_soft-core_non_core_distances_ST1_clade2_R20291.qmd`
+7. `scripts/r/build_pair_table.Rmd`
+8. `scripts/r/descriptive_analysis_presentation/`
+
 # Project Workflow
 
 ## 1. Metadata and Descriptive Exploration
@@ -51,6 +77,13 @@ This layer is intentionally smaller than `source_code/`. Each file captures one 
 One branch of the work focused on patient demographics, onset type, location data, and sequence type distributions. This created the epidemiologic context needed to interpret later genomic results.
 
 Small code file for this step: `code/04_patient_metadata_overview.R`
+
+Curated scripts for this step:
+
+- `scripts/r/2025-07-22_Preliminary_results_on_patient_and_location_data.Rmd`
+- `scripts/r/descriptive_analysis_presentation/01_build_filtered_metadata.R`
+- `scripts/r/descriptive_analysis_presentation/02_descriptive_statistics.R`
+- `scripts/r/descriptive_analysis_presentation/03_Visualization.R`
 
 Representative notebook:
 
@@ -83,6 +116,8 @@ Before any custom SNV analysis, the project started with quality control and ass
 
 Small code file for this step: `code/01_qc_and_assembly_review.sh`
 
+Curated script for this step: `scripts/bash/01_qc_and_assembly_review.sh`
+
 Representative QC-oriented commands:
 
 ```bash
@@ -104,6 +139,8 @@ This stage filtered out poor assemblies before downstream variant calling, clust
 After QC, I used [`snpkit`](https://github.com/alipirani88/snpkit) as part of the reference-based microbial variant-calling workflow. In practice, this stage handled read mapping, variant calling, filtering, and generation of the matrices and alignments used for later comparison work.
 
 Small code file for this step: `code/02_variant_calling_with_snpkit.sh`
+
+Curated script for this step: `scripts/bash/02_variant_calling_with_snpkit.sh`
 
 Representative usage pattern:
 
@@ -141,6 +178,8 @@ Alongside the variant-calling workflow, I also used [`cognac`](https://github.co
 
 Small code file for this step: `code/03_core_gene_alignment_with_cognac.R`
 
+Curated script for this step: `scripts/r/cdiff_cognac_070125.R`
+
 Representative project-specific use:
 
 ```r
@@ -172,6 +211,11 @@ This provided broader sequence context that complemented the stricter reference-
 The most technically important part of the project was a modular R pipeline for computing SNV distances from whole-genome alignments. The design explicitly separated:
 
 Small code file for this step: `code/05_alignment_filtering_and_qc.R`
+
+Curated scripts for this step:
+
+- `scripts/r/SNV_Pipeline_design.Rmd`
+- `scripts/r/snv_pipeline_skeleton.R`
 
 - alignment reading
 - missingness summaries
@@ -207,6 +251,11 @@ This design made it possible to compare how different filtering strategies chang
 The reusable helper functions were then wrapped in a top-level executable script with command-line arguments for alignments, masking inputs, secondary isolates, output directories, and threshold settings.
 
 Small code file for this step: `code/09_submit_snv_pipeline.slurm`
+
+Curated scripts for this step:
+
+- `scripts/r/run_snv_pipeline.R`
+- `scripts/slurm/submit_snv_pipeline.slurm`
 
 Representative wrapper excerpt:
 
@@ -255,6 +304,8 @@ Another major analysis stream compared distance definitions directly on real ali
 
 Small code file for this step: `code/06_compare_distance_definitions.R`
 
+Curated script for this step: `scripts/qmd/compare_core_vs_soft-core_non_core_distances_ST1_clade2_R20291.qmd`
+
 Representative analysis excerpt:
 
 ```r
@@ -279,6 +330,12 @@ After generating pairwise distances, the project grouped closely related isolate
 
 This work produced cluster summaries, adjacency graphs, and cluster size/range summaries for clade-specific analyses.
 
+Curated scripts for this step:
+
+- `scripts/r/descriptive_analysis_presentation/16_extract_post_noncore_clusters_clean_clade1_clade2.R`
+- `scripts/r/descriptive_analysis_presentation/20_threshold_enrichment_significance_plots.R`
+- `scripts/r/descriptive_analysis_presentation/21_cluster_patient_stay_timelines.R`
+
 ### Available Output Figures
 
 ![Clade 2 pre-core cluster plot](figures/clade2_pre_core_cluster_plot.png)
@@ -292,6 +349,8 @@ This work produced cluster summaries, adjacency graphs, and cluster size/range s
 A later stage converted pairwise SNV outputs into analysis-ready pair tables, especially for clade-specific case/control-style comparisons within sequence type.
 
 Small code file for this step: `code/07_build_case_control_pairs.R`
+
+Curated script for this step: `scripts/r/build_pair_table.Rmd`
 
 Representative excerpt:
 
@@ -320,6 +379,14 @@ This stage connected the SNV calculations to a more interpretable epidemiologic 
 The project also examined whether genetically close isolates shared room or unit overlap patterns, and whether overlap signals differed across cluster definitions and pipelines.
 
 Small code file for this step: `code/08_cluster_overlap_analysis.R`
+
+Curated scripts for this step:
+
+- `scripts/r/2025-07-22_Sequential_Overlap.Rmd`
+- `scripts/r/descriptive_analysis_presentation/15_location_overlap_snv_histograms.R`
+- `scripts/r/descriptive_analysis_presentation/17_location_overlap_snv_tests.R`
+- `scripts/r/descriptive_analysis_presentation/22_unit_type_overlap_snv_analysis.R`
+- `scripts/r/descriptive_analysis_presentation/27_compare_sequential_thresholds.R`
 
 Representative outputs included unit- and room-based overlap summaries, sequential overlap plots, and sensitivity analyses.
 
