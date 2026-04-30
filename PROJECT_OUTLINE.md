@@ -322,8 +322,6 @@ Those results were exported as matrices and long-form tables for downstream merg
 
 ![SNV counts scatter](figures/snv_counts_scatter_0_100.png)
 
-![SNV absolute difference histogram](figures/snv_abs_diff_hist.png)
-
 ## 8. Cluster Analysis
 
 After generating pairwise distances, the project grouped closely related isolates into clusters and compared how cluster structure changed across pre-core, post-softcore, and post-noncore pipelines.
